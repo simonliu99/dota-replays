@@ -69,11 +69,11 @@ class DotAReplays:
 
         start = datetime.now()
         success = 0
-        failed = []
+        failed = {}
         for match in tqdm(self.data['matches']):
             if (start - datetime.fromtimestamp(match['start_time'])).total_seconds() < 1209600:
                 if match['match_id'] not in self.data['cache']:
-                    failed.append(match['match_id'])
+                    failed[match['match_id']] = '   . details for match %d not found'
                     continue
                 replay_url = self.data['cache'][match['match_id']]['replay_url']
                 if replay_url.split('/')[-1] in existing: 
@@ -82,8 +82,11 @@ class DotAReplays:
                     wget.download(replay_url, out=dir)
                     success += 1
                 except:
-                    failed.append(match['match_id'])
-        if failed: print('   . downloaded %d matches, failed %d' % (success, len(failed)))
+                    failed[match['match_id']] = '   . match %d download failed'
+        if failed: 
+            print('   . downloaded %d matches, failed %d' % (success, len(failed)))
+            for id in failed: 
+                print(failed[id] % id)
     
     def export(self):
         print(' . exporting pickle')
