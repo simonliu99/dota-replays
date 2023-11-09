@@ -45,13 +45,15 @@ class DotAReplays:
         print('   . found %d matches not in cache' % len(to_get))
 
         start = datetime.now()
+        parsed = []
         failed = []
         for match in tqdm(to_get):
             # only request parse if match was within last 2 weeks
             if (start - datetime.fromtimestamp(match['start_time'])).total_seconds() < 1209600:
                 time.sleep(0.8)
                 post = requests.post('https://api.opendota.com/api/request/%d' % match['match_id'])
-                print('    . requested parse for match %d with status %d' % (match['match_id'], post.status_code))
+                if post.status_code != 200:
+                    parsed.append('    . failed to request parse for match %d, response %d' % (match['match_id'], post.status_code))
 
             time.sleep(0.8)
             get = requests.get('https://api.opendota.com/api/matches/%d' % match['match_id'])
@@ -60,6 +62,9 @@ class DotAReplays:
                 continue
             self.data['cache'][match['match_id']] = json.loads(get.text)
         
+        if parsed:
+            for msg in parsed:
+                print(msg)
         if failed:
             print('   . could not get details for matches %s' % failed)
 
