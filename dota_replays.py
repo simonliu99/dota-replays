@@ -73,12 +73,12 @@ class DotAReplays:
         for match in tqdm(self.data['matches']):
             if (start - datetime.fromtimestamp(match['start_time'])).total_seconds() < 1209600:
                 if match['match_id'] not in self.data['cache']:
-                    failed[match['match_id']] = '   . details for match %d not found'
+                    failed[match['match_id']] = '    . details for match %d not found'
                     continue
                 try:
                     replay_url = self.data['cache'][match['match_id']]['replay_url']
                 except KeyError:
-                    failed[match['match_id']] = '   . match %d replay_url not found'
+                    failed[match['match_id']] = '    . match %d replay_url not found'
                     continue
                 if replay_url.split('/')[-1] in existing: 
                     continue
@@ -86,7 +86,7 @@ class DotAReplays:
                     wget.download(replay_url, out=dir)
                     success += 1
                 except:
-                    failed[match['match_id']] = '   . match %d download failed'
+                    failed[match['match_id']] = '    . match %d download failed'
         if failed: 
             print('   . downloaded %d matches, failed %d' % (success, len(failed)))
             for id in failed: 
