@@ -123,7 +123,6 @@ if __name__ == "__main__":
     print('DotA Replay Downloader')
     args = arg_parse()
 
-    # player_id = 117718885
     if 'profile' not in json.loads(requests.get('https://api.opendota.com/api/players/%d' % args['player_id']).text):
         sys.exit(' . ERROR: player %d not found' % args['player_id'])
 
