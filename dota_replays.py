@@ -4,6 +4,7 @@ import json
 import time
 import wget
 import pickle
+import argparse
 import requests
 from tqdm import tqdm
 from datetime import datetime
@@ -35,9 +36,12 @@ class DotAReplays:
         print('   . found %d matches' % len(self.data['matches']))
         
 
-    def get_details(self):
+    def get_details(self, refresh=False, n=20):
         print(' . getting match details')
-        to_get = [match for match in self.data['matches'] if match['match_id'] not in self.data['cache']]
+        if refresh:
+            to_get = self.data['matches'][:n]
+        else:
+            to_get = [match for match in self.data['matches'] if match['match_id'] not in self.data['cache']]
         print('   . found %d matches not in cache' % len(to_get))
 
         start = datetime.now()
@@ -101,14 +105,24 @@ class DotAReplays:
         print('   . saved to file %s' % fn)
 
 
+def arg_parse():
+    parser = argparse.ArgumentParser(description='DotA replay downloader.', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('player_id', metavar='ID', type=int, help='DotA player ID')
+    parser.add_argument('-n', '--recent-matches', metavar='N', type=int, default=50, help='fetch N most recent matches, use N=-1 for all')
+    parser.add_argument('-r', '--refresh', action='store_true', help='overwrite cache')
+    return vars(parser.parse_args())
+
+
 if __name__ == "__main__":
     print('DotA Replay Downloader')
-    player_id = 117718885
-    if 'profile' not in json.loads(requests.get('https://api.opendota.com/api/players/%d' % player_id).text):
-        sys.exit(' . ERROR: player not found')
+    args = arg_parse()
 
-    dr = DotAReplays(player_id)
+    # player_id = 117718885
+    if 'profile' not in json.loads(requests.get('https://api.opendota.com/api/players/%d' % args['player_id']).text):
+        sys.exit(' . ERROR: player %d not found' % args['player_id'])
+
+    dr = DotAReplays(args['player_id'])
     dr.get_matches()
-    dr.get_details()
+    dr.get_details(refresh=args['refresh'], n=args['recent_matches'])
     dr.get_downloads()
     dr.export()
