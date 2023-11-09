@@ -108,7 +108,7 @@ class DotAReplays:
 def arg_parse():
     parser = argparse.ArgumentParser(description='DotA replay downloader.', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('player_id', metavar='ID', type=int, help='DotA player ID')
-    parser.add_argument('-n', '--recent-matches', metavar='N', type=int, default=50, help='fetch N most recent matches, use N=-1 for all')
+    parser.add_argument('-n', '--recent-matches', metavar='N', type=int, default=20, help='fetch N most recent matches, use N=-1 for all')
     parser.add_argument('-r', '--refresh', action='store_true', help='overwrite cache')
     return vars(parser.parse_args())
 
