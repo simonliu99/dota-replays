@@ -97,8 +97,9 @@ class DotAReplays:
                     success += 1
                 except:
                     failed[match['match_id']] = '    . match %d download failed'
-        if failed: 
-            print('   . downloaded %d matches, failed %d' % (success, len(failed)))
+        
+        print('   . downloaded %d matches, failed %d' % (success, len(failed)))
+        if failed:
             for id in failed: 
                 print(failed[id] % id)
     
