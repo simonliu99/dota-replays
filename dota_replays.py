@@ -103,7 +103,7 @@ class DotAReplays:
 
 if __name__ == "__main__":
     print('DotA Replay Downloader')
-    player_id = 0
+    player_id = 117718885
     if 'profile' not in json.loads(requests.get('https://api.opendota.com/api/players/%d' % player_id).text):
         sys.exit(' . ERROR: player not found')
 
