@@ -43,17 +43,17 @@ class DotAReplays:
         start = datetime.now()
         failed = []
         for match in tqdm(to_get):
+            # only request parse if match was within last 2 weeks
+            if (start - datetime.fromtimestamp(match['start_time'])).total_seconds() < 1209600:
+                time.sleep(0.8)
+                requests.post('https://api.opendota.com/api/request/%d' % match['match_id'])
+
             time.sleep(0.8)
             get = requests.get('https://api.opendota.com/api/matches/%d' % match['match_id'])
             if get.status_code != 200:
                 failed.append(match['match_id'])
                 continue
             self.data['cache'][match['match_id']] = json.loads(get.text)
-
-            # only request parse if match was within last 2 weeks
-            if (start - datetime.fromtimestamp(match['start_time'])).total_seconds() < 1209600:
-                time.sleep(0.8)
-                requests.post('https://api.opendota.com/api/request/%d' % match['match_id'])
         
         if failed:
             print('   . could not get details for matches %s' % failed)
@@ -75,7 +75,10 @@ class DotAReplays:
                 if match['match_id'] not in self.data['cache']:
                     failed[match['match_id']] = '   . details for match %d not found'
                     continue
-                replay_url = self.data['cache'][match['match_id']]['replay_url']
+                try:
+                    replay_url = self.data['cache'][match['match_id']]['replay_url']
+                except KeyError:
+                    failed[match['match_id']] = '   . match %d replay_url not found'
                 if replay_url.split('/')[-1] in existing: 
                     continue
                 try:
