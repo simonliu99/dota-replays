@@ -46,7 +46,8 @@ class DotAReplays:
             # only request parse if match was within last 2 weeks
             if (start - datetime.fromtimestamp(match['start_time'])).total_seconds() < 1209600:
                 time.sleep(0.8)
-                requests.post('https://api.opendota.com/api/request/%d' % match['match_id'])
+                post = requests.post('https://api.opendota.com/api/request/%d' % match['match_id'])
+                print('    . requested parse for match %d with status %d' % (match['match_id'], post.status_code))
 
             time.sleep(0.8)
             get = requests.get('https://api.opendota.com/api/matches/%d' % match['match_id'])
