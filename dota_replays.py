@@ -79,6 +79,7 @@ class DotAReplays:
                     replay_url = self.data['cache'][match['match_id']]['replay_url']
                 except KeyError:
                     failed[match['match_id']] = '   . match %d replay_url not found'
+                    continue
                 if replay_url.split('/')[-1] in existing: 
                     continue
                 try:
