@@ -264,3 +264,65 @@ class Database:
             "SELECT * FROM parse_jobs WHERE completed_at IS NULL"
         )
         return [dict(row) for row in cursor.fetchall()]
+
+    # ==================== Stats/Audit Operations ====================
+
+    def get_stats(self) -> dict:
+        """Get database statistics for audit."""
+        stats = {}
+        
+        # Player count
+        cursor = self.conn.execute("SELECT COUNT(*) FROM players")
+        stats["players"] = cursor.fetchone()[0]
+        
+        # Match counts
+        cursor = self.conn.execute("SELECT COUNT(*) FROM matches")
+        stats["matches_total"] = cursor.fetchone()[0]
+        
+        # Match details
+        cursor = self.conn.execute("SELECT COUNT(*) FROM match_details")
+        stats["matches_with_details"] = cursor.fetchone()[0]
+        
+        cursor = self.conn.execute("SELECT COUNT(*) FROM match_details WHERE replay_url IS NOT NULL")
+        stats["matches_with_replay_url"] = cursor.fetchone()[0]
+        
+        cursor = self.conn.execute("SELECT COUNT(*) FROM match_details WHERE replay_url IS NULL")
+        stats["matches_without_replay_url"] = cursor.fetchone()[0]
+        
+        cursor = self.conn.execute("SELECT COUNT(*) FROM match_details WHERE is_parsed = TRUE")
+        stats["matches_parsed"] = cursor.fetchone()[0]
+        
+        # Downloads
+        cursor = self.conn.execute("SELECT COUNT(*) FROM downloads")
+        stats["downloads_tracked"] = cursor.fetchone()[0]
+        
+        cursor = self.conn.execute("SELECT COUNT(*) FROM downloads WHERE on_disk = TRUE")
+        stats["downloads_on_disk"] = cursor.fetchone()[0]
+        
+        # Matches without details
+        cursor = self.conn.execute("""
+            SELECT COUNT(*) FROM matches m
+            LEFT JOIN match_details md ON m.match_id = md.match_id
+            WHERE md.match_id IS NULL
+        """)
+        stats["matches_without_details"] = cursor.fetchone()[0]
+        
+        return stats
+
+    def get_matches_without_replay_url(self, limit: int | None = None) -> list[dict]:
+        """Get matches that have details but no replay URL (candidates for re-fetch)."""
+        query = """
+            SELECT md.match_id, md.fetched_at FROM match_details md
+            WHERE md.replay_url IS NULL
+            ORDER BY md.fetched_at ASC
+        """
+        if limit:
+            query += f" LIMIT {limit}"
+        cursor = self.conn.execute(query)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def delete_match_details(self, match_id: int) -> None:
+        """Delete match details to allow re-fetching."""
+        self.conn.execute("DELETE FROM match_details WHERE match_id = ?", (match_id,))
+        self.conn.commit()
+

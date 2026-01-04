@@ -219,6 +219,63 @@ class DotaReplays:
         if unmatched > 0:
             logger.info("Unmatched files may be from matches not yet fetched or parsed")
 
+    def show_status(self) -> None:
+        """Display database statistics."""
+        stats = self.db.get_stats()
+        
+        print("\n" + "=" * 50)
+        print("DATABASE STATUS")
+        print("=" * 50)
+        print(f"\nPlayers tracked:          {stats['players']}")
+        print(f"\nMatches:")
+        print(f"  Total in database:      {stats['matches_total']}")
+        print(f"  With details cached:    {stats['matches_with_details']}")
+        print(f"  Without details:        {stats['matches_without_details']}")
+        print(f"\nMatch Details:")
+        print(f"  With replay URL:        {stats['matches_with_replay_url']}")
+        print(f"  Without replay URL:     {stats['matches_without_replay_url']}")
+        print(f"  Parsed by OpenDota:     {stats['matches_parsed']}")
+        print(f"\nDownloads:")
+        print(f"  Tracked in database:    {stats['downloads_tracked']}")
+        print(f"  Verified on disk:       {stats['downloads_on_disk']}")
+        print("=" * 50 + "\n")
+        
+        # Suggestions
+        if stats['matches_without_details'] > 0:
+            print(f"TIP: Run 'python dota_replays.py' to fetch {stats['matches_without_details']} missing match details")
+        if stats['matches_without_replay_url'] > 0:
+            print(f"TIP: Run 'python dota_replays.py --refresh' to re-fetch {stats['matches_without_replay_url']} matches without replay URLs")
+
+    def refresh_missing_replay_urls(self, limit: int | None = None) -> None:
+        """Re-fetch match details for matches missing replay URLs."""
+        matches = self.db.get_matches_without_replay_url(limit=limit)
+        if not matches:
+            logger.info("All matches have replay URLs")
+            return
+
+        logger.info(f"Re-fetching {len(matches)} matches without replay URLs...")
+        success = 0
+        still_missing = 0
+
+        for match in tqdm(matches, desc="Refreshing"):
+            match_id = match["match_id"]
+            
+            # Delete old details and re-fetch
+            self.db.delete_match_details(match_id)
+            details = self.client.get_match_details(match_id)
+            
+            if details:
+                self.db.upsert_match_details(match_id, details)
+                if details.get("replay_url"):
+                    success += 1
+                else:
+                    still_missing += 1
+                    logger.debug(f"Match {match_id} still has no replay URL")
+
+        logger.info(f"Refreshed {len(matches)} matches: {success} now have URLs, {still_missing} still missing")
+        if still_missing > 0:
+            logger.info("Note: Old matches may not have replays available")
+
     def _redownload_missing(self, missing: list[dict]) -> None:
         """Re-download missing replay files."""
         logger.info(f"Re-downloading {len(missing)} missing files...")
@@ -287,6 +344,16 @@ def parse_args() -> argparse.Namespace:
         help="Re-download missing files (requires --verify)",
     )
     parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Show database statistics and status",
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Re-fetch match details for matches missing replay URLs",
+    )
+    parser.add_argument(
         "--api-key",
         type=str,
         default=os.environ.get("OPENDOTA_API_KEY"),
@@ -336,7 +403,13 @@ def main() -> None:
     )
 
     try:
-        if args.scan:
+        if args.status:
+            # Status mode - show database stats
+            app.show_status()
+        elif args.refresh:
+            # Refresh mode - re-fetch matches without replay URLs
+            app.refresh_missing_replay_urls(limit=args.limit)
+        elif args.scan:
             # Scan mode - discover existing files
             app.scan_replay_directory()
         elif args.verify:
