@@ -63,6 +63,14 @@ class Database:
                 FOREIGN KEY (match_id) REFERENCES matches(match_id)
             );
 
+            CREATE TABLE IF NOT EXISTS download_attempts (
+                match_id INTEGER PRIMARY KEY,
+                attempt_count INTEGER DEFAULT 0,
+                last_attempt_at TIMESTAMP,
+                last_error TEXT,
+                FOREIGN KEY (match_id) REFERENCES matches(match_id)
+            );
+
             CREATE TABLE IF NOT EXISTS parse_jobs (
                 match_id INTEGER PRIMARY KEY,
                 job_id INTEGER,
@@ -187,13 +195,17 @@ class Database:
         if downloaded:
             # Include downloaded
             query = """
-                SELECT md.match_id, md.replay_url FROM match_details md
+                SELECT md.match_id, md.replay_url, m.start_time 
+                FROM match_details md
+                JOIN matches m ON md.match_id = m.match_id
                 WHERE md.replay_url IS NOT NULL
             """
         else:
             # Exclude already downloaded
             query = """
-                SELECT md.match_id, md.replay_url FROM match_details md
+                SELECT md.match_id, md.replay_url, m.start_time 
+                FROM match_details md
+                JOIN matches m ON md.match_id = m.match_id
                 LEFT JOIN downloads d ON md.match_id = d.match_id
                 WHERE md.replay_url IS NOT NULL AND d.match_id IS NULL
             """
@@ -235,6 +247,67 @@ class Database:
         """Get downloads marked as on_disk but may need verification."""
         cursor = self.conn.execute("SELECT * FROM downloads WHERE on_disk = FALSE")
         return [dict(row) for row in cursor.fetchall()]
+
+    # ==================== Download Attempt Tracking ====================
+
+    def record_download_attempt(self, match_id: int, error: str | None = None) -> None:
+        """Record a failed download attempt."""
+        self.conn.execute("""
+            INSERT INTO download_attempts (match_id, attempt_count, last_attempt_at, last_error)
+            VALUES (?, 1, ?, ?)
+            ON CONFLICT(match_id) DO UPDATE SET
+                attempt_count = attempt_count + 1,
+                last_attempt_at = excluded.last_attempt_at,
+                last_error = excluded.last_error
+        """, (match_id, datetime.now().isoformat(), error))
+        self.conn.commit()
+
+    def get_download_attempt(self, match_id: int) -> dict | None:
+        """Get download attempt info for a match."""
+        cursor = self.conn.execute(
+            "SELECT * FROM download_attempts WHERE match_id = ?",
+            (match_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def should_retry_download(self, match_id: int, match_start_time: int, max_age_days: int = 21) -> bool:
+        """
+        Check if a download should be retried.
+        
+        Rules:
+        - If match is older than max_age_days: max 1 attempt
+        - If match is newer: max 2 attempts
+        """
+        from datetime import datetime, timedelta
+        
+        match_date = datetime.fromtimestamp(match_start_time)
+        age = datetime.now() - match_date
+        is_old = age > timedelta(days=max_age_days)
+        
+        attempt = self.get_download_attempt(match_id)
+        if not attempt:
+            return True  # Never tried
+        
+        attempt_count = attempt["attempt_count"]
+        max_attempts = 1 if is_old else 2
+        
+        return attempt_count < max_attempts
+
+    def clear_download_attempts(self, match_id: int) -> None:
+        """Clear download attempts for a match (after successful download)."""
+        self.conn.execute("DELETE FROM download_attempts WHERE match_id = ?", (match_id,))
+        self.conn.commit()
+
+    def get_failed_downloads_stats(self) -> dict:
+        """Get stats about failed downloads."""
+        cursor = self.conn.execute("SELECT COUNT(*) FROM download_attempts")
+        total = cursor.fetchone()[0]
+        
+        cursor = self.conn.execute("SELECT COUNT(*) FROM download_attempts WHERE attempt_count >= 2")
+        exhausted = cursor.fetchone()[0]
+        
+        return {"total_failed": total, "exhausted_retries": exhausted}
 
     # ==================== Parse Job Operations ====================
 

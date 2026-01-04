@@ -74,6 +74,7 @@ python dota_replays.py --wait-for-parse
 | `--redownload`     | False                             | Re-download missing files (requires `--verify`)               |
 | `--status`         | False                             | Show database statistics and status                           |
 | `--refresh`        | False                             | Re-fetch match details for matches missing replay URLs        |
+| `--force-retry`    | False                             | Retry failed downloads within 21-day threshold                |
 | `--api-key`        | `$OPENDOTA_API_KEY`               | OpenDota API key for higher rate limits                       |
 | `--db`             | `$DB_PATH` or `./dota_replays.db` | Path to SQLite database                                       |
 | `--replay-dir`     | `$REPLAY_DIR` or `./replays`      | Directory to store replay files                               |

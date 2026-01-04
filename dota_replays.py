@@ -48,6 +48,7 @@ class DotaReplays:
         self.client = client
         self.replay_dir = replay_dir
         self.wait_for_parse = wait_for_parse
+        self.force_retry = False  # Set via main() when --force-retry is used
         self.replay_dir.mkdir(parents=True, exist_ok=True)
 
     def update_player(self, player_id: int, limit: int | None = None) -> None:
@@ -78,7 +79,7 @@ class DotaReplays:
         self._fetch_match_details(player_id, limit)
 
         # Download replays
-        self._download_replays()
+        self._download_replays(force_retry=self.force_retry)
 
     def _fetch_match_details(self, player_id: int, limit: int | None = None) -> None:
         """Fetch and cache match details from OpenDota."""
@@ -113,18 +114,47 @@ class DotaReplays:
             if details:
                 self.db.upsert_match_details(match_id, details)
 
-    def _download_replays(self) -> None:
+    def _download_replays(self, force_retry: bool = False) -> None:
         """Download replay files for matches with replay URLs."""
         matches = self.db.get_matches_with_replay_url(downloaded=False)
         if not matches:
             logger.info("No new replays to download")
             return
 
-        logger.info(f"Downloading {len(matches)} replays...")
+        # Filter by retry limits (unless force_retry within 21 days)
+        eligible = []
+        skipped = 0
+        cutoff = datetime.now() - timedelta(days=21)
+        
+        for match in matches:
+            match_id = match["match_id"]
+            start_time = match.get("start_time", 0)
+            match_date = datetime.fromtimestamp(start_time) if start_time else datetime.min
+            is_within_threshold = match_date > cutoff
+            
+            if force_retry:
+                # Force retry only works within 21-day threshold
+                if is_within_threshold:
+                    eligible.append(match)
+                else:
+                    skipped += 1
+            elif self.db.should_retry_download(match_id, start_time):
+                eligible.append(match)
+            else:
+                skipped += 1
+
+        if skipped > 0:
+            logger.info(f"Skipped {skipped} matches (retry limit reached or too old)")
+        
+        if not eligible:
+            logger.info("No eligible replays to download")
+            return
+
+        logger.info(f"Downloading {len(eligible)} replays...")
         success = 0
         failed = 0
 
-        for match in tqdm(matches, desc="Downloading"):
+        for match in tqdm(eligible, desc="Downloading"):
             match_id = match["match_id"]
             replay_url = match["replay_url"]
 
@@ -137,14 +167,18 @@ class DotaReplays:
             if filepath.exists():
                 # Already on disk, just record it
                 self.db.record_download(match_id, filename, filepath.stat().st_size)
+                self.db.clear_download_attempts(match_id)
                 continue
 
             try:
                 wget.download(replay_url, out=str(self.replay_dir), bar=None)
                 file_size = filepath.stat().st_size if filepath.exists() else None
                 self.db.record_download(match_id, filename, file_size)
+                self.db.clear_download_attempts(match_id)
                 success += 1
             except Exception as e:
+                error_str = str(e)[:200]  # Truncate long errors
+                self.db.record_download_attempt(match_id, error_str)
                 logger.error(f"Failed to download match {match_id}: {e}")
                 failed += 1
 
@@ -243,6 +277,7 @@ class DotaReplays:
     def show_status(self) -> None:
         """Display database statistics."""
         stats = self.db.get_stats()
+        failed_stats = self.db.get_failed_downloads_stats()
         
         print("\n" + "=" * 50)
         print("DATABASE STATUS")
@@ -259,6 +294,9 @@ class DotaReplays:
         print(f"\nDownloads:")
         print(f"  Tracked in database:    {stats['downloads_tracked']}")
         print(f"  Verified on disk:       {stats['downloads_on_disk']}")
+        print(f"\nFailed Downloads:")
+        print(f"  Total failed attempts:  {failed_stats['total_failed']}")
+        print(f"  Exhausted retries:      {failed_stats['exhausted_retries']}")
         print("=" * 50 + "\n")
         
         # Suggestions
@@ -266,6 +304,8 @@ class DotaReplays:
             print(f"TIP: Run 'python dota_replays.py' to fetch {stats['matches_without_details']} missing match details")
         if stats['matches_without_replay_url'] > 0:
             print(f"TIP: Run 'python dota_replays.py --refresh' to re-fetch {stats['matches_without_replay_url']} matches without replay URLs")
+        if failed_stats['exhausted_retries'] > 0:
+            print(f"TIP: Run 'python dota_replays.py --force-retry' to retry {failed_stats['exhausted_retries']} failed downloads (within 21 days)")
 
     def refresh_missing_replay_urls(self, limit: int | None = None) -> None:
         """Re-fetch match details for matches missing replay URLs."""
@@ -375,6 +415,11 @@ def parse_args() -> argparse.Namespace:
         help="Re-fetch match details for matches missing replay URLs",
     )
     parser.add_argument(
+        "--force-retry",
+        action="store_true",
+        help="Retry failed downloads within 21-day threshold (resets attempt counts)",
+    )
+    parser.add_argument(
         "--api-key",
         type=str,
         default=os.environ.get("OPENDOTA_API_KEY"),
@@ -422,6 +467,7 @@ def main() -> None:
         replay_dir=replay_dir,
         wait_for_parse=args.wait_for_parse,
     )
+    app.force_retry = args.force_retry
 
     try:
         if args.status:
