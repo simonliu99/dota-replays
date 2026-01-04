@@ -132,13 +132,12 @@ class DotaReplays:
             match_date = datetime.fromtimestamp(start_time) if start_time else datetime.min
             is_within_threshold = match_date > cutoff
             
-            if force_retry:
-                # Force retry only works within 21-day threshold
-                if is_within_threshold:
-                    eligible.append(match)
-                else:
-                    skipped += 1
-            elif self.db.should_retry_download(match_id, start_time):
+            # Skip matches older than 21 days (replays expire)
+            if not is_within_threshold:
+                skipped += 1
+                continue
+            
+            if force_retry or self.db.should_retry_download(match_id, start_time):
                 eligible.append(match)
             else:
                 skipped += 1
@@ -153,6 +152,7 @@ class DotaReplays:
         logger.info(f"Downloading {len(eligible)} replays...")
         success = 0
         failed = 0
+        errors = []  # Collect errors to print after progress bar
 
         for match in tqdm(eligible, desc="Downloading"):
             match_id = match["match_id"]
@@ -177,12 +177,31 @@ class DotaReplays:
                 self.db.clear_download_attempts(match_id)
                 success += 1
             except Exception as e:
-                error_str = str(e)[:200]  # Truncate long errors
-                self.db.record_download_attempt(match_id, error_str)
-                logger.error(f"Failed to download match {match_id}: {e}")
+                # Parse common HTTP errors for cleaner output
+                error_msg = str(e)
+                if "502" in error_msg:
+                    short_error = "502 Bad Gateway"
+                elif "404" in error_msg:
+                    short_error = "404 Not Found"
+                elif "503" in error_msg:
+                    short_error = "503 Service Unavailable"
+                elif "timeout" in error_msg.lower():
+                    short_error = "Timeout"
+                else:
+                    short_error = error_msg[:50]
+                
+                errors.append((match_id, short_error))
+                self.db.record_download_attempt(match_id, error_msg[:200])
                 failed += 1
 
+        # Print summary after progress bar
         logger.info(f"Downloaded {success} replays, {failed} failed")
+        
+        # Show failed downloads if any
+        if errors:
+            logger.warning("Failed downloads:")
+            for match_id, error in errors:
+                logger.warning(f"  Match {match_id}: {error}")
 
     def verify_downloads(self, redownload: bool = False) -> None:
         """Verify all downloads exist on disk."""
