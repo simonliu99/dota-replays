@@ -1,4 +1,8 @@
 .DS_Store
 __pycache__
 replays-*
+replays/
 *.pkl
+*.db
+*.db-wal
+*.db-shm
