@@ -14,9 +14,13 @@ from datetime import datetime, timedelta
 
 import wget
 from tqdm import tqdm
+from dotenv import load_dotenv
 
 from database import Database
 from opendota_client import OpenDotaClient
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -246,14 +250,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--db",
         type=str,
-        default="./dota_replays.db",
-        help="Path to SQLite database",
+        default=os.environ.get("DB_PATH", "./dota_replays.db"),
+        help="Path to SQLite database (env: DB_PATH)",
     )
     parser.add_argument(
         "--replay-dir",
         type=str,
-        default="./replays",
-        help="Directory to store replay files",
+        default=os.environ.get("REPLAY_DIR", "./replays"),
+        help="Directory to store replay files (env: REPLAY_DIR)",
     )
     parser.add_argument(
         "-v", "--verbose",

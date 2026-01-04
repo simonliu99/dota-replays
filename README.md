@@ -68,6 +68,22 @@ python dota_replays.py --wait-for-parse
 2. Go to **My Profile**
 3. Your URL will be: `https://www.opendota.com/players/<player_id>`
 
+## Configuration
+
+Copy `.env.example` to `.env` and customize:
+
+```bash
+cp .env.example .env
+```
+
+| Variable           | Default             | Description                    |
+| ------------------ | ------------------- | ------------------------------ |
+| `OPENDOTA_API_KEY` | -                   | API key for higher rate limits |
+| `REPLAY_DIR`       | `./replays`         | Replay storage (can be NFS)    |
+| `DB_PATH`          | `./dota_replays.db` | SQLite database path           |
+
+> **Note**: SQLite doesn't work well on NFS due to file locking. Keep `DB_PATH` on local storage and only use NFS for `REPLAY_DIR`.
+
 ## Migration from v1
 
 If you have existing `.pkl` files from the old version:

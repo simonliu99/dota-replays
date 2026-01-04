@@ -6,3 +6,4 @@ replays/
 *.db
 *.db-wal
 *.db-shm
+.env
