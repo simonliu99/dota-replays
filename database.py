@@ -21,8 +21,57 @@ class Database:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self._create_tables()
 
+    # Current schema version - increment when adding migrations
+    SCHEMA_VERSION = 2
+
     def _create_tables(self) -> None:
-        """Create database tables if they don't exist."""
+        """Create/migrate database tables."""
+        # Create schema version table first
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY
+            )
+        """)
+        
+        # Get current version
+        cursor = self.conn.execute("SELECT MAX(version) FROM schema_version")
+        row = cursor.fetchone()
+        current_version = row[0] if row[0] is not None else 0
+        
+        # Detect existing v1 database (has tables but no version)
+        if current_version == 0:
+            cursor = self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='players'"
+            )
+            if cursor.fetchone():
+                # Existing database without version tracking - assume v1
+                logger.info("Detected existing v1 database, setting version")
+                self.conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+                self.conn.commit()
+                current_version = 1
+        
+        # Run migrations
+        if current_version < self.SCHEMA_VERSION:
+            logger.info(f"Migrating database from v{current_version} to v{self.SCHEMA_VERSION}")
+            self._run_migrations(current_version)
+    
+    def _run_migrations(self, from_version: int) -> None:
+        """Run all migrations from current version to latest."""
+        migrations = {
+            1: self._migrate_v1,  # Initial schema
+            2: self._migrate_v2,  # Add download_attempts table
+        }
+        
+        for version in range(from_version + 1, self.SCHEMA_VERSION + 1):
+            if version in migrations:
+                logger.info(f"Running migration v{version}...")
+                migrations[version]()
+                self.conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+                self.conn.commit()
+                logger.info(f"Migration v{version} complete")
+    
+    def _migrate_v1(self) -> None:
+        """Initial schema - create all base tables."""
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS players (
                 player_id INTEGER PRIMARY KEY,
@@ -63,14 +112,6 @@ class Database:
                 FOREIGN KEY (match_id) REFERENCES matches(match_id)
             );
 
-            CREATE TABLE IF NOT EXISTS download_attempts (
-                match_id INTEGER PRIMARY KEY,
-                attempt_count INTEGER DEFAULT 0,
-                last_attempt_at TIMESTAMP,
-                last_error TEXT,
-                FOREIGN KEY (match_id) REFERENCES matches(match_id)
-            );
-
             CREATE TABLE IF NOT EXISTS parse_jobs (
                 match_id INTEGER PRIMARY KEY,
                 job_id INTEGER,
@@ -83,7 +124,18 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_matches_start_time ON matches(start_time);
             CREATE INDEX IF NOT EXISTS idx_downloads_on_disk ON downloads(on_disk);
         """)
-        self.conn.commit()
+    
+    def _migrate_v2(self) -> None:
+        """Add download_attempts table for tracking failed downloads."""
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS download_attempts (
+                match_id INTEGER PRIMARY KEY,
+                attempt_count INTEGER DEFAULT 0,
+                last_attempt_at TIMESTAMP,
+                last_error TEXT,
+                FOREIGN KEY (match_id) REFERENCES matches(match_id)
+            );
+        """)
 
     def close(self) -> None:
         """Close the database connection."""
