@@ -106,6 +106,11 @@ class OpenDotaClient:
         Note: This counts as 10 API calls for rate limiting.
         """
         response = self._request("POST", f"/request/{match_id}")
+        
+        # Parse requests count as 10 calls - add extra delay
+        delay = 5.0 if self.api_key else 10.0  # 10 calls worth of delay
+        time.sleep(delay)
+        
         if response.status_code == 200:
             data = response.json()
             job = data.get("job", {})

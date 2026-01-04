@@ -45,6 +45,16 @@ python dota_replays.py --verify
 python dota_replays.py --verify --redownload
 ```
 
+### Troubleshooting
+
+```bash
+# Show database statistics
+python dota_replays.py --status
+
+# Re-fetch match details for matches missing replay URLs
+python dota_replays.py --refresh
+```
+
 ### Parse Monitoring
 
 ```bash
