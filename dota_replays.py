@@ -179,6 +179,46 @@ class DotaReplays:
         else:
             logger.info("All files verified on disk")
 
+    def scan_replay_directory(self) -> None:
+        """Scan replay directory and register existing files in database."""
+        if not self.replay_dir.exists():
+            logger.warning(f"Replay directory does not exist: {self.replay_dir}")
+            return
+
+        # Get all .dem.bz2 files
+        replay_files = list(self.replay_dir.glob("*.dem.bz2"))
+        if not replay_files:
+            logger.info(f"No replay files found in {self.replay_dir}")
+            return
+
+        logger.info(f"Found {len(replay_files)} replay files, matching to database...")
+
+        # Build a map of replay_url filename -> match_id from cached details
+        matches_with_urls = self.db.get_matches_with_replay_url(downloaded=True)
+        url_to_match = {}
+        for m in matches_with_urls:
+            if m["replay_url"]:
+                filename = m["replay_url"].split("/")[-1]
+                url_to_match[filename] = m["match_id"]
+
+        matched = 0
+        unmatched = 0
+
+        for filepath in tqdm(replay_files, desc="Scanning"):
+            filename = filepath.name
+            if filename in url_to_match:
+                match_id = url_to_match[filename]
+                file_size = filepath.stat().st_size
+                self.db.record_download(match_id, filename, file_size)
+                matched += 1
+            else:
+                unmatched += 1
+                logger.debug(f"No match found for: {filename}")
+
+        logger.info(f"Registered {matched} files, {unmatched} unmatched")
+        if unmatched > 0:
+            logger.info("Unmatched files may be from matches not yet fetched or parsed")
+
     def _redownload_missing(self, missing: list[dict]) -> None:
         """Re-download missing replay files."""
         logger.info(f"Re-downloading {len(missing)} missing files...")
@@ -237,6 +277,11 @@ def parse_args() -> argparse.Namespace:
         help="Verify all downloaded files exist on disk",
     )
     parser.add_argument(
+        "--scan",
+        action="store_true",
+        help="Scan replay directory and register existing files in database",
+    )
+    parser.add_argument(
         "--redownload",
         action="store_true",
         help="Re-download missing files (requires --verify)",
@@ -291,7 +336,10 @@ def main() -> None:
     )
 
     try:
-        if args.verify:
+        if args.scan:
+            # Scan mode - discover existing files
+            app.scan_replay_directory()
+        elif args.verify:
             # Verification mode
             app.verify_downloads(redownload=args.redownload)
         elif args.player_id:
