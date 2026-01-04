@@ -193,7 +193,12 @@ class DotaReplays:
 
         logger.info(f"Found {len(replay_files)} replay files, matching to database...")
 
-        # Build a map of replay_url filename -> match_id from cached details
+        # Get all match_ids we know about
+        all_match_ids = set()
+        for player in self.db.get_all_players():
+            all_match_ids.update(self.db.get_match_ids_for_player(player["player_id"]))
+
+        # Also build URL map as fallback
         matches_with_urls = self.db.get_matches_with_replay_url(downloaded=True)
         url_to_match = {}
         for m in matches_with_urls:
@@ -203,21 +208,37 @@ class DotaReplays:
 
         matched = 0
         unmatched = 0
+        unmatched_files = []
 
         for filepath in tqdm(replay_files, desc="Scanning"):
             filename = filepath.name
-            if filename in url_to_match:
+            match_id = None
+
+            # Method 1: Extract match_id from filename prefix (e.g., "8634561787_1891250204.dem.bz2")
+            try:
+                match_id_str = filename.split("_")[0]
+                potential_id = int(match_id_str)
+                if potential_id in all_match_ids:
+                    match_id = potential_id
+            except (ValueError, IndexError):
+                pass
+
+            # Method 2: Fall back to URL matching
+            if match_id is None and filename in url_to_match:
                 match_id = url_to_match[filename]
+
+            if match_id:
                 file_size = filepath.stat().st_size
                 self.db.record_download(match_id, filename, file_size)
                 matched += 1
             else:
                 unmatched += 1
+                unmatched_files.append(filename)
                 logger.debug(f"No match found for: {filename}")
 
         logger.info(f"Registered {matched} files, {unmatched} unmatched")
         if unmatched > 0:
-            logger.info("Unmatched files may be from matches not yet fetched or parsed")
+            logger.info("Unmatched files may be from matches not in database (other players' matches)")
 
     def show_status(self) -> None:
         """Display database statistics."""
