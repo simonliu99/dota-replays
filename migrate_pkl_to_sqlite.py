@@ -16,7 +16,12 @@ import logging
 from pathlib import Path
 from glob import glob
 
+from dotenv import load_dotenv
+
 from database import Database
+
+# Load environment variables from .env file
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -170,8 +175,8 @@ def main() -> None:
     parser.add_argument(
         "--replay-dir",
         type=str,
-        default="./replays",
-        help="Target directory for consolidated replays",
+        default=os.environ.get("REPLAY_DIR", "./replays"),
+        help="Target directory for consolidated replays (env: REPLAY_DIR)",
     )
     args = parser.parse_args()
     
