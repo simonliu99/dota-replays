@@ -42,12 +42,14 @@ class DotaReplays:
         db: Database,
         client: OpenDotaClient,
         replay_dir: Path,
-        wait_for_parse: bool = False,
+        wait_for_parse: bool = True,
+        force_refresh: bool = False,
     ):
         self.db = db
         self.client = client
         self.replay_dir = replay_dir
         self.wait_for_parse = wait_for_parse
+        self.force_refresh = force_refresh
         self.force_retry = False  # Set via main() when --force-retry is used
         self.replay_dir.mkdir(parents=True, exist_ok=True)
 
@@ -83,9 +85,14 @@ class DotaReplays:
 
     def _fetch_match_details(self, player_id: int, limit: int | None = None) -> None:
         """Fetch and cache match details from OpenDota."""
-        matches = self.db.get_matches_without_details(player_id, limit)
+        if self.force_refresh:
+            logger.info(f"Force refreshing details for last {limit or 'all'} matches...")
+            matches = self.db.get_recent_matches(player_id, limit)
+        else:
+            matches = self.db.get_matches_without_details(player_id, limit)
+
         if not matches:
-            logger.info("All matches have cached details")
+            logger.info("All matches have cached details" if not self.force_refresh else "No matches found")
             return
 
         logger.info(f"Fetching details for {len(matches)} matches...")
@@ -404,9 +411,11 @@ def parse_args() -> argparse.Namespace:
         help="Limit number of matches to process",
     )
     parser.add_argument(
-        "--wait-for-parse",
-        action="store_true",
-        help="Wait for parse jobs to complete before fetching details",
+        "--no-wait-for-parse",
+        dest="wait_for_parse",
+        action="store_false",
+        default=True,
+        help="Do not wait for parse jobs to complete (default: wait is enabled)",
     )
     parser.add_argument(
         "--verify",
@@ -437,6 +446,11 @@ def parse_args() -> argparse.Namespace:
         "--force-retry",
         action="store_true",
         help="Retry failed downloads within 21-day threshold (resets attempt counts)",
+    )
+    parser.add_argument(
+        "--force-refresh",
+        action="store_true",
+        help="Force re-fetch match details for the last N matches (use with -n)",
     )
     parser.add_argument(
         "--api-key",
@@ -485,6 +499,7 @@ def main() -> None:
         client=client,
         replay_dir=replay_dir,
         wait_for_parse=args.wait_for_parse,
+        force_refresh=args.force_refresh,
     )
     app.force_retry = args.force_retry
 

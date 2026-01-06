@@ -213,6 +213,17 @@ class Database:
         cursor = self.conn.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
+    def get_recent_matches(self, player_id: int, limit: int | None = None) -> list[dict]:
+        """Get most recent matches for a player."""
+        query = "SELECT * FROM matches WHERE player_id = ? ORDER BY start_time DESC"
+        params: list[Any] = [player_id]
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+        
+        cursor = self.conn.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
     # ==================== Match Details Operations ====================
 
     def get_match_details(self, match_id: int) -> dict | None:
