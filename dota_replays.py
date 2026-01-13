@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 
-import wget
+import requests
 from tqdm import tqdm
 from dotenv import load_dotenv
 
@@ -178,8 +178,12 @@ class DotaReplays:
                 continue
 
             try:
-                wget.download(replay_url, out=str(self.replay_dir), bar=None)
-                file_size = filepath.stat().st_size if filepath.exists() else None
+                response = requests.get(replay_url, stream=True, timeout=60)
+                response.raise_for_status()
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                file_size = filepath.stat().st_size
                 self.db.record_download(match_id, filename, file_size)
                 self.db.clear_download_attempts(match_id)
                 success += 1
@@ -382,8 +386,12 @@ class DotaReplays:
             filepath = self.replay_dir / filename
 
             try:
-                wget.download(replay_url, out=str(self.replay_dir), bar=None)
-                file_size = filepath.stat().st_size if filepath.exists() else None
+                response = requests.get(replay_url, stream=True, timeout=60)
+                response.raise_for_status()
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                file_size = filepath.stat().st_size
                 self.db.record_download(match_id, filename, file_size)
                 success += 1
             except Exception as e:
