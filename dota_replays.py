@@ -96,30 +96,60 @@ class DotaReplays:
             return
 
         logger.info(f"Fetching details for {len(matches)} matches...")
-        cutoff = datetime.now() - timedelta(days=self.RECENT_DAYS)
+        # OpenDota recommends 21 days as the threshold for replay availability
+        cutoff = datetime.now() - timedelta(days=21)
 
         for match in tqdm(matches, desc="Fetching details"):
             match_id = match["match_id"]
             start_time = datetime.fromtimestamp(match["start_time"])
 
-            # Request parse for recent matches
-            if start_time > cutoff and self.wait_for_parse:
+            # 1. Fetch match details
+            details = self.client.get_match_details(match_id)
+            if not details:
+                continue
+
+            # 2. Check if parsed (version field)
+            version = details.get("version")
+            if version is None and start_time > cutoff:
+                logger.info(f"Match {match_id} is unparsed, requesting parse...")
                 job_id = self.client.request_parse(match_id)
                 if job_id:
                     self.db.record_parse_request(match_id, job_id)
-                    logger.info(f"Waiting for parse of match {match_id}...")
+                    if self.wait_for_parse:
+                        logger.info(f"Waiting for parse of match {match_id}...")
+                        if self.client.poll_parse_completion(job_id):
+                            self.db.mark_parse_complete(match_id)
+                            # 3. Final fetch after parse
+                            details = self.client.get_match_details(match_id) or details
+
+            # 4. Save to database
+            self.db.upsert_match_details(match_id, details)
+
+    def recheck_unparsed_matches(self, limit: int | None = None) -> None:
+        """Re-check matches that are in the database but not fully parsed."""
+        matches = self.db.get_unparsed_matches(limit=limit, max_age_days=21)
+        if not matches:
+            logger.info("No unparsed matches found within 21-day threshold")
+            return
+
+        logger.info(f"Re-checking {len(matches)} unparsed matches...")
+        for match in tqdm(matches, desc="Re-checking parses"):
+            match_id = match["match_id"]
+            
+            # Request parse
+            job_id = self.client.request_parse(match_id)
+            if job_id:
+                self.db.record_parse_request(match_id, job_id)
+                if self.wait_for_parse:
                     if self.client.poll_parse_completion(job_id):
                         self.db.mark_parse_complete(match_id)
-            elif start_time > cutoff:
-                # Just request parse, don't wait
-                job_id = self.client.request_parse(match_id)
-                if job_id:
-                    self.db.record_parse_request(match_id, job_id)
-
-            # Fetch match details
-            details = self.client.get_match_details(match_id)
-            if details:
-                self.db.upsert_match_details(match_id, details)
+                        details = self.client.get_match_details(match_id)
+                        if details:
+                            self.db.upsert_match_details(match_id, details)
+                else:
+                    # If not waiting, we still want to refresh details later
+                    # but for now we've triggered the parse
+                    pass
 
     def _download_replays(self, force_retry: bool = False) -> None:
         """Download replay files for matches with replay URLs."""
@@ -451,6 +481,11 @@ def parse_args() -> argparse.Namespace:
         help="Re-fetch match details for matches missing replay URLs",
     )
     parser.add_argument(
+        "--recheck-parsing",
+        action="store_true",
+        help="Re-check unparsed matches within 21-day threshold",
+    )
+    parser.add_argument(
         "--force-retry",
         action="store_true",
         help="Retry failed downloads within 21-day threshold (resets attempt counts)",
@@ -518,6 +553,9 @@ def main() -> None:
         elif args.refresh:
             # Refresh mode - re-fetch matches without replay URLs
             app.refresh_missing_replay_urls(limit=args.limit)
+        elif args.recheck_parsing:
+            # Re-check parsing for unparsed matches
+            app.recheck_unparsed_matches(limit=args.limit)
         elif args.scan:
             # Scan mode - discover existing files
             app.scan_replay_directory()

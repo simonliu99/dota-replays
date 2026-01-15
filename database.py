@@ -238,9 +238,10 @@ class Database:
     def upsert_match_details(self, match_id: int, data: dict) -> None:
         """Insert or update match details."""
         replay_url = data.get("replay_url")
-        # Check if parsed (has player ability upgrades, gold/xp arrays, etc.)
-        is_parsed = bool(data.get("players") and 
-                        data["players"][0].get("ability_upgrades_arr"))
+        # Check if parsed (has version > 0)
+        # Modern OpenDota parses usually have version >= 21
+        version = data.get("version")
+        is_parsed = version is not None and version > 0
         
         self.conn.execute("""
             INSERT INTO match_details (match_id, data, replay_url, is_parsed, fetched_at)
@@ -455,6 +456,28 @@ class Database:
         if limit:
             query += f" LIMIT {limit}"
         cursor = self.conn.execute(query)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_unparsed_matches(self, limit: int | None = None, max_age_days: int = 21) -> list[dict]:
+        """Get matches where is_parsed is False and result is not too old."""
+        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(days=max_age_days)
+        
+        query = """
+            SELECT m.match_id, m.start_time 
+            FROM matches m
+            JOIN match_details md ON m.match_id = md.match_id
+            WHERE md.is_parsed = 0
+            AND datetime(m.start_time, 'unixepoch') > ?
+            ORDER BY m.start_time DESC
+        """
+        params = [cutoff.strftime('%Y-%m-%d %H:%M:%S')]
+        
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+            
+        cursor = self.conn.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
     def delete_match_details(self, match_id: int) -> None:

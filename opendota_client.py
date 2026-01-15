@@ -122,21 +122,32 @@ class OpenDotaClient:
         logger.warning(f"Failed to request parse for match {match_id}: {response.status_code}")
         return None
 
-    def get_parse_status(self, job_id: int) -> bool:
+    def get_parse_status(self, job_id: int) -> str | None:
         """
-        Check if a parse job is complete.
-        Returns True if complete, False if still pending.
+        Check the status of a parse job.
+        Returns "completed", "failed", "pending", or None if request failed.
         """
         response = self._request("GET", f"/request/{job_id}")
-        # Job is complete when we get a 200 response
-        # (the endpoint returns the job status or empty if done)
-        return response.status_code == 200
+        if response.status_code == 200:
+            # If the job is still pending, it returns job info
+            # If it's completed, it might return empty or complete info
+            data = response.json()
+            if not data:
+                return "completed"
+            
+            # Check state if present
+            # Typical OpenDota job response: {"jobId": "...", "state": "active", ...}
+            # Or it might just return null/empty when finished.
+            # Based on docs: "The response will tell you if the job is 'pending', 'failed', or 'completed'."
+            return data.get("state") or "completed"
+            
+        return None
 
     def poll_parse_completion(
         self, 
         job_id: int, 
         timeout: int = 300, 
-        poll_interval: int = 10
+        poll_interval: int = 20
     ) -> bool:
         """
         Poll until a parse job completes or timeout.
@@ -144,17 +155,22 @@ class OpenDotaClient:
         Args:
             job_id: The parse job ID to monitor
             timeout: Maximum seconds to wait (default 5 minutes)
-            poll_interval: Seconds between polls (default 10)
+            poll_interval: Seconds between polls (default 20)
             
         Returns:
-            True if parse completed, False if timed out
+            True if parse completed, False if timed out or failed
         """
         start = time.time()
         while time.time() - start < timeout:
-            if self.get_parse_status(job_id):
+            status = self.get_parse_status(job_id)
+            if status == "completed":
                 logger.info(f"Parse job {job_id} completed")
                 return True
-            logger.debug(f"Parse job {job_id} still pending, waiting...")
+            elif status == "failed":
+                logger.warning(f"Parse job {job_id} failed")
+                return False
+            
+            logger.debug(f"Parse job {job_id} status: {status}, waiting...")
             time.sleep(poll_interval)
         
         logger.warning(f"Parse job {job_id} timed out after {timeout}s")
