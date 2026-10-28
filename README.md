@@ -10,11 +10,17 @@ A script to download match replays and cache OpenDota parsed data for Dota 2 mat
 - **Disk verification** - Verify downloads exist and re-download missing files
 - **Configurable storage** - Store replays on NFS via .env configuration
 - **Rate limiting** - Respects OpenDota API limits with retry logic
+- **Standard library only** - No packages to install
+
+## Requirements
+
+Python 3.10 or later. The program uses the Python standard library alone.
 
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/simonliu99/dota-replays.git
+cd dota-replays
 ```
 
 ## Usage
@@ -87,6 +93,9 @@ Copy `.env.example` to `.env` and customize:
 ```bash
 cp .env.example .env
 ```
+
+A `.env` file is read when the optional `python-dotenv` package is installed;
+without it, set the same variables in the environment or pass the CLI flags.
 
 | Variable           | Default             | Description                    |
 | ------------------ | ------------------- | ------------------------------ |

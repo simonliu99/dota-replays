@@ -1,4 +1,5 @@
 import json
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
@@ -9,9 +10,11 @@ from pathlib import Path
 
 class TestParseLogic(unittest.TestCase):
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
         self.mock_db = MagicMock(spec=Database)
         self.mock_client = MagicMock(spec=OpenDotaClient)
-        self.replay_dir = Path("./test_replays")
+        self.replay_dir = Path(self.temp_dir.name) / "replays"
         self.app = DotaReplays(
             db=self.mock_db,
             client=self.mock_client,

@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Record OpenDota answers into tests/fixtures/opendota.json.
+
+Run by hand when the fixture needs to be refreshed, with no API key:
+
+    tests/record-opendota [player_id]
+
+The script asks for the player's profile, the player's newest match and that
+match's details, then stores each answer with the path the fake serves it
+from. The fake's messages therefore come from a real response.
+"""
+
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlsplit
+
+API = "https://api.opendota.com/api"
+DEFAULT_PLAYER_ID = 86745912
+MATCH_LIMIT = 1
+DELAY = 1.0  # no API key: stay under 60 requests a minute
+TIMEOUT = 30
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "opendota.json"
+
+
+def get(path: str) -> dict:
+    """Fetch one API path and return it as a fixture entry."""
+    url = f"{API}{path}"
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json", "User-Agent": "dota-replays/record-opendota"},
+    )
+    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        status = response.status
+        body = response.read()
+    time.sleep(DELAY)
+    if status != 200:
+        raise SystemExit(f"{url} answered {status}: {body[:200]!r}")
+    return {
+        "url": url,
+        "path": urlsplit(url).path,
+        "status": status,
+        "body": json.loads(body),
+    }
+
+
+def main() -> None:
+    player_id = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PLAYER_ID
+
+    responses = [get(f"/players/{player_id}")]
+    matches = get(f"/players/{player_id}/matches?limit={MATCH_LIMIT}")
+    responses.append(matches)
+    match_ids = [match["match_id"] for match in matches["body"][:MATCH_LIMIT]]
+    if not match_ids:
+        raise SystemExit(f"player {player_id} has no recent matches")
+    for match_id in match_ids:
+        responses.append(get(f"/matches/{match_id}"))
+
+    for response in responses:
+        size = len(json.dumps(response["body"]).encode("utf-8"))
+        print(f"{response['status']} {response['url']} ({size} bytes)")
+
+    fixture = {
+        "source": API,
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "player_id": player_id,
+        "match_ids": match_ids,
+        "responses": responses,
+    }
+    FIXTURE.parent.mkdir(parents=True, exist_ok=True)
+    FIXTURE.write_text(json.dumps(fixture, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote {FIXTURE}")
+
+
+if __name__ == "__main__":
+    main()
