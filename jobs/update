@@ -32,15 +32,36 @@ if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) e
     exit 1
 fi
 
-python3 dota_replays.py \
+failed=0
+
+# Run one step whatever the earlier ones returned, print its exit code and
+# remember a failure: a lost fetch must not leave the share without a copy.
+run_step() {
+    step=$1
+    shift
+    if "$@"; then
+        code=0
+    else
+        code=$?
+    fi
+    printf '%s: %s exited %s\n' "$0" "$step" "$code"
+    [ "$code" -eq 0 ] || failed=1
+}
+
+run_step update python3 dota_replays.py \
     --db "$SWITCHBOARD_BULK/dota_replays.db" \
     --replay-dir "$DOTA_REPLAY_DIR" \
     -n 100 \
     --parse-wait-budget 900
-python3 dota_replays.py \
+run_step recheck-parsing python3 dota_replays.py \
     --db "$SWITCHBOARD_BULK/dota_replays.db" \
     --replay-dir "$DOTA_REPLAY_DIR" \
     --recheck-parsing \
     -n 30 \
     --parse-wait-budget 300
-python3 db_copy.py
+run_step database-copy python3 db_copy.py
+
+[ "$failed" -eq 0 ] || {
+    printf '%s: one or more steps failed\n' "$0" >&2
+    exit 1
+}

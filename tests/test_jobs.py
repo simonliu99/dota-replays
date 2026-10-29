@@ -243,6 +243,54 @@ class JobEntryTestCase(unittest.TestCase):
             output.index("DATABASE STATUS"), output.index("Verifying 1 downloads")
         )
 
+    def test_a_failed_update_step_does_not_skip_the_later_steps(self):
+        log = self.root / "steps.txt"
+        self.stub_step_runner(log, fail_step=1)
+
+        result = self.run_entry(
+            UPDATE_ENTRY, self.env(STUB_LOG=str(log)), merge=True
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        steps = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(steps), 3, steps)
+        self.assertRegex(
+            steps[0], r"^dota_replays\.py --db \S+/dota_replays\.db .* -n 100 "
+        )
+        self.assertNotIn("--recheck-parsing", steps[0])
+        self.assertIn("--recheck-parsing", steps[1])
+        self.assertEqual(steps[2], "db_copy.py")
+        exit_lines = [line for line in result.stdout.splitlines() if " exited " in line]
+        self.assertEqual(
+            exit_lines,
+            [
+                f"{UPDATE_ENTRY}: update exited 1",
+                f"{UPDATE_ENTRY}: recheck-parsing exited 0",
+                f"{UPDATE_ENTRY}: database-copy exited 0",
+            ],
+        )
+        self.assertIn("one or more steps failed", result.stdout)
+
+    def stub_step_runner(self, log, fail_step):
+        """Replace python3 with a stub that records each step and fails one."""
+        stub = self.bin / "python3"
+        stub.unlink()
+        stub.write_text(
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "    --version) printf 'Python 3.13.0\\n'; exit 0 ;;\n"
+            "    -c) exit 0 ;;\n"
+            "esac\n"
+            "printf '%s\\n' \"$*\" >> \"$STUB_LOG\"\n"
+            "count=$(wc -l < \"$STUB_LOG\")\n"
+            f"if [ \"$count\" -eq {fail_step} ]; then\n"
+            "    exit 1\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
     def seed_player(self, player_id):
         database = Database(str(self.bulk / "dota_replays.db"))
         try:
