@@ -66,16 +66,10 @@ def _describe_download_error(error: Exception) -> str:
 
 
 class PlayerUpdate(NamedTuple):
-    """What one player's update fetched and how many detail fetches failed."""
+    """Whether one player's update fetched the player and its match list."""
 
     player_fetched: bool
     matches_fetched: bool
-    failed_details: int = 0
-
-    @property
-    def succeeded(self) -> bool:
-        """Return whether the player, its match list and every detail came in."""
-        return self.player_fetched and self.matches_fetched and not self.failed_details
 
 
 def _plural(noun: str, plural: str, count: int) -> str:
@@ -166,19 +160,15 @@ class DotaReplays:
         logger.info(f"Found {len(matches)} matches, {new_count} new")
 
         # Get details for matches without cache
-        failed_details = self._fetch_match_details(player_id, limit)
+        self._fetch_match_details(player_id, limit)
 
         # Download replays
         self._download_replays(force_retry=self.force_retry)
 
-        return PlayerUpdate(
-            player_fetched=True,
-            matches_fetched=True,
-            failed_details=failed_details,
-        )
+        return PlayerUpdate(player_fetched=True, matches_fetched=True)
 
-    def _fetch_match_details(self, player_id: int, limit: int | None = None) -> int:
-        """Fetch and cache match details, returning how many fetches failed."""
+    def _fetch_match_details(self, player_id: int, limit: int | None = None) -> None:
+        """Fetch and cache match details from OpenDota."""
         if self.force_refresh:
             logger.info(f"Force refreshing details for last {limit or 'all'} matches...")
             matches = self.db.get_recent_matches(player_id, limit)
@@ -187,12 +177,11 @@ class DotaReplays:
 
         if not matches:
             logger.info("All matches have cached details" if not self.force_refresh else "No matches found")
-            return 0
+            return
 
         logger.info(f"Fetching details for {len(matches)} matches...")
         # OpenDota recommends 21 days as the threshold for replay availability
         cutoff = datetime.now() - timedelta(days=21)
-        failed = 0
 
         for match in _progress(matches, "Fetching details"):
             match_id = match["match_id"]
@@ -201,8 +190,7 @@ class DotaReplays:
             # 1. Fetch match details
             details = self.client.get_match_details(match_id)
             if not details:
-                failed += 1
-                logger.error(f"Failed to fetch details for match {match_id}")
+                logger.warning(f"Skipping match {match_id}: no details fetched")
                 continue
 
             # 2. Check if parsed (version field)
@@ -220,8 +208,6 @@ class DotaReplays:
 
             # 4. Save to database
             self.db.upsert_match_details(match_id, details)
-
-        return failed
 
     def recheck_unparsed_matches(self, limit: int | None = None) -> None:
         """Re-check matches that are in the database but not fully parsed."""
@@ -492,7 +478,11 @@ class DotaReplays:
             print(f"TIP: Run 'python dota_replays.py --force-retry' to retry {failed_stats['exhausted_retries']} failed downloads (within 21 days)")
 
     def refresh_missing_replay_urls(self, limit: int | None = None) -> None:
-        """Re-fetch match details for matches missing replay URLs."""
+        """Re-fetch match details for matches missing replay URLs.
+
+        The stored details are replaced only by an answer that arrived, so a
+        failed fetch keeps what the database already holds.
+        """
         matches = self.db.get_matches_without_replay_url(limit=limit)
         if not matches:
             logger.info("All matches have replay URLs")
@@ -504,18 +494,18 @@ class DotaReplays:
 
         for match in _progress(matches, "Refreshing"):
             match_id = match["match_id"]
-            
-            # Delete old details and re-fetch
-            self.db.delete_match_details(match_id)
+
             details = self.client.get_match_details(match_id)
-            
-            if details:
-                self.db.upsert_match_details(match_id, details)
-                if details.get("replay_url"):
-                    success += 1
-                else:
-                    still_missing += 1
-                    logger.debug(f"Match {match_id} still has no replay URL")
+            if not details:
+                logger.warning(f"Kept the stored details of match {match_id}")
+                continue
+
+            self.db.upsert_match_details(match_id, details)
+            if details.get("replay_url"):
+                success += 1
+            else:
+                still_missing += 1
+                logger.debug(f"Match {match_id} still has no replay URL")
 
         logger.info(f"Refreshed {len(matches)} matches: {success} now have URLs, {still_missing} still missing")
         if still_missing > 0:
@@ -713,16 +703,21 @@ def main() -> None:
     finally:
         db.close()
 
-    failed_players = sum(1 for update in updates if not update.succeeded)
-    failed_details = sum(update.failed_details for update in updates)
-    if failed_players or failed_details:
-        players_text = _plural(
-            "failed player update", "failed player updates", failed_players
-        )
-        details_text = _plural(
-            "failed match detail fetch", "failed match detail fetches", failed_details
-        )
-        logger.error(f"Finished with {players_text} and {details_text}")
+    failed_players = sum(
+        1
+        for update in updates
+        if not (update.player_fetched and update.matches_fetched)
+    )
+    failed_requests = client.failed_requests
+    if failed_players or failed_requests:
+        parts = []
+        if failed_players:
+            parts.append(
+                _plural("failed player update", "failed player updates", failed_players)
+            )
+        if failed_requests:
+            parts.append(_plural("failed request", "failed requests", failed_requests))
+        logger.error(f"Finished with {', '.join(parts)}")
         sys.exit(1)
 
     logger.info("Done!")

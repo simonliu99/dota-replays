@@ -18,6 +18,7 @@ PLAYER_A = 101
 PLAYER_B = 202
 MATCH_IDS = (111, 222, 333)
 EXPIRED_MATCH = 444
+UNPARSED_MATCH = 555
 
 
 def profile(player_id: int) -> dict:
@@ -43,8 +44,9 @@ def match(match_id: int) -> dict:
 class FakeClient:
     """An OpenDotaClient stand-in answering only what the test records.
 
-    A player, match list or match details the test left out is answered None,
-    which is what the real client answers for a failed fetch.
+    A player, match list, set of details or parse answer the test left out is
+    answered None and counted in failed_requests, as the real client counts a
+    fetch that carried nothing.
     """
 
     def __init__(
@@ -52,28 +54,39 @@ class FakeClient:
         players: dict,
         matches: dict | None = None,
         details: dict | None = None,
+        parses: dict | None = None,
     ):
         self.players = players
         self.matches = matches or {}
         self.details = details or {}
+        self.parses = parses or {}
+        self.failed_requests = 0
         self.player_calls = []
         self.detail_calls = []
+        self.parse_calls = []
 
     def get_player(self, player_id: int) -> dict | None:
         self.player_calls.append(player_id)
-        return self.players.get(player_id)
+        return self._record(self.players.get(player_id))
 
     def get_player_matches(
         self, player_id: int, limit: int | None = None
     ) -> list[dict] | None:
-        return self.matches.get(player_id)
+        return self._record(self.matches.get(player_id))
 
     def get_match_details(self, match_id: int) -> dict | None:
         self.detail_calls.append(match_id)
-        return self.details.get(match_id)
+        return self._record(self.details.get(match_id))
 
     def request_parse(self, match_id: int) -> int | None:
-        return None
+        self.parse_calls.append(match_id)
+        return self._record(self.parses.get(match_id))
+
+    def _record(self, answer):
+        """Return the answer, counting one failed fetch when it is None."""
+        if answer is None:
+            self.failed_requests += 1
+        return answer
 
 
 class ExitCodeTestCase(unittest.TestCase):
@@ -167,7 +180,7 @@ class ExitCodeTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("No matches found", "\n".join(output))
 
-    def test_a_failed_detail_fetch_is_counted_and_the_rest_are_stored(self):
+    def test_a_failed_detail_fetch_is_counted_once_and_the_rest_are_stored(self):
         self.seed_players([PLAYER_A])
         client = FakeClient(
             players={PLAYER_A: profile(PLAYER_A)},
@@ -183,10 +196,51 @@ class ExitCodeTestCase(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(sorted(client.detail_calls), list(MATCH_IDS))
         db = self.database()
-        self.assertEqual(db.get_match_details(MATCH_IDS[0]), {"match_id": MATCH_IDS[0], "version": 21})
+        self.assertEqual(
+            db.get_match_details(MATCH_IDS[0]), {"match_id": MATCH_IDS[0], "version": 21}
+        )
         self.assertIsNone(db.get_match_details(MATCH_IDS[1]))
-        self.assertEqual(db.get_match_details(MATCH_IDS[2]), {"match_id": MATCH_IDS[2], "version": 21})
-        self.assertIn("1 failed match detail fetch", output[-1])
+        self.assertEqual(
+            db.get_match_details(MATCH_IDS[2]), {"match_id": MATCH_IDS[2], "version": 21}
+        )
+        self.assertNotIn("failed player update", output[-1])
+        self.assertIn("1 failed request", output[-1])
+
+    def test_a_refresh_that_fetches_nothing_keeps_the_stored_details(self):
+        db = self.seed_players([PLAYER_A])
+        db.insert_matches(PLAYER_A, [match(match_id) for match_id in MATCH_IDS])
+        stored = {
+            match_id: {"match_id": match_id, "version": 21}
+            for match_id in MATCH_IDS
+        }
+        for match_id, details in stored.items():
+            db.upsert_match_details(match_id, details)
+        client = FakeClient(
+            players={},
+            details={
+                MATCH_IDS[0]: stored[MATCH_IDS[0]],
+                MATCH_IDS[2]: stored[MATCH_IDS[2]],
+            },
+        )
+
+        code, output = self.run_main("--refresh", client=client)
+
+        for match_id, details in stored.items():
+            self.assertEqual(db.get_match_details(match_id), details)
+        self.assertEqual(code, 1)
+        self.assertIn("1 failed request", output[-1])
+
+    def test_a_recheck_with_a_failed_parse_request_exits_one(self):
+        db = self.seed_players([PLAYER_A])
+        db.insert_matches(PLAYER_A, [match(UNPARSED_MATCH)])
+        db.upsert_match_details(UNPARSED_MATCH, {"match_id": UNPARSED_MATCH})
+        client = FakeClient(players={}, parses={UNPARSED_MATCH: None})
+
+        code, output = self.run_main("--recheck-parsing", client=client)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(client.parse_calls, [UNPARSED_MATCH])
+        self.assertIn("1 failed request", output[-1])
 
     def test_a_replay_answering_not_found_exits_zero(self):
         server = ReplayServer(b"", status=404)
@@ -212,17 +266,21 @@ class ExitCodeTestCase(unittest.TestCase):
         self.assertIn("Downloaded 0 replays, 1 failed", "\n".join(output))
         self.assertEqual(len(server.requests), 1)
 
-    def test_a_body_cut_short_counts_as_a_failed_fetch(self):
+    def test_a_body_cut_short_counts_a_failure_and_both_players_are_fetched(self):
         server, player_id = self.recorded()
         server.truncate_next(f"/api/players/{player_id}")
-        self.seed_players([player_id])
+        server.truncate_next(f"/api/players/{PLAYER_B}")
+        server.responses[f"/api/players/{PLAYER_B}"] = profile(PLAYER_B)
+        self.seed_players([player_id, PLAYER_B])
         client = opendota_client.OpenDotaClient(base_url=f"{server.base_url}/api")
 
-        code, output = self.run_main(str(player_id), client=client)
+        code, output = self.run_main(client=client)
 
-        log = "\n".join(output)
         self.assertEqual(code, 1)
-        self.assertIn(f"Player {player_id} not found", log)
+        requested = [path for _, path in server.requests]
+        self.assertIn(f"/api/players/{player_id}", requested)
+        self.assertIn(f"/api/players/{PLAYER_B}", requested)
+        self.assertIn("2 failed player updates", output[-1])
 
     def test_a_truncated_player_answer_logs_its_error(self):
         server, player_id = self.recorded()

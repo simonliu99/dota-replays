@@ -50,6 +50,9 @@ class OpenDotaClient:
         self.api_key = api_key
         self.base_url = (base_url or self.BASE_URL).rstrip("/")
         self.last_request_time = 0.0
+        # Answers that carried nothing: a connection or read failure, or a 429
+        # or 5xx the retries did not clear. main() reads this to exit nonzero.
+        self.failed_requests = 0
 
     def _rate_limit(self) -> None:
         """Enforce rate limiting between requests."""
@@ -65,8 +68,9 @@ class OpenDotaClient:
         """Make a rate-limited request, retrying 429 and 5xx answers.
 
         A connection that never opens, or a body cut short after the headers,
-        answers FAILED_STATUS instead of raising, so a caller counts one failed
-        fetch rather than the run ending.
+        answers FAILED_STATUS instead of raising. An answer that carried
+        nothing counts in failed_requests, so main() can exit nonzero from any
+        mode.
         """
         query = dict(params or {})
         if self.api_key:
@@ -85,7 +89,12 @@ class OpenDotaClient:
                 response = self._request_with_retries(method, endpoint, url)
         except (OSError, http.client.HTTPException) as error:
             logger.error(f"{method} {endpoint} failed: {error}")
+            self.failed_requests += 1
             return ApiResponse(FAILED_STATUS, b"")
+
+        if response.status_code in self.RETRY_STATUSES:
+            # A 429 or a 5xx the retries did not clear is a failed fetch.
+            self.failed_requests += 1
 
         return response
 
@@ -153,7 +162,12 @@ class OpenDotaClient:
         if response.status_code == 200:
             return response.json()
 
-        logger.error(f"Failed to get match {match_id}: {response.status_code}")
+        if response.status_code == 404:
+            # An expired or missing match is ordinary, the same as an expired
+            # replay; it does not make the run fail.
+            logger.warning(f"Match {match_id} not found: {response.status_code}")
+        else:
+            logger.error(f"Failed to get match {match_id}: {response.status_code}")
         return None
 
     def request_parse(self, match_id: int) -> int | None:
