@@ -74,8 +74,29 @@ class JobEntryTestCase(unittest.TestCase):
         env.update(overrides)
         return env
 
-    def run_entry(self, entry, env=None, merge=False):
-        return run([str(entry)], self.run_dir, env or self.env(), merge=merge)
+    def run_entry(self, entry, env=None, merge=False, cwd=None):
+        return run(
+            [str(entry)], cwd or self.run_dir, env or self.env(), merge=merge
+        )
+
+    def case_env(self, label):
+        """Return an environment and empty directories for one subtest."""
+        case_root = self.root / label
+        case_root.mkdir()
+        directories = {}
+        for name in ("bulk", "replays", "copy", "run"):
+            directories[name] = case_root / name
+            directories[name].mkdir()
+        env = self.env(
+            SWITCHBOARD_BULK=str(directories["bulk"]),
+            DOTA_REPLAY_DIR=str(directories["replays"]),
+            DOTA_DB_COPY_DIR=str(directories["copy"]),
+        )
+        return env, directories
+
+    def assert_empty(self, directories):
+        for name in ("bulk", "replays", "copy", "run"):
+            self.assertEqual(os.listdir(directories[name]), [], name)
 
     def assert_nothing_created(self):
         self.assertEqual(os.listdir(self.run_dir), [])
@@ -86,11 +107,11 @@ class JobEntryTestCase(unittest.TestCase):
     def test_a_missing_variable_fails_and_creates_nothing(self):
         for name in ("SWITCHBOARD_BULK", "DOTA_REPLAY_DIR", "DOTA_DB_COPY_DIR"):
             with self.subTest(name=name):
-                env = self.env()
+                env, directories = self.case_env(f"missing-variable-{name}")
                 del env[name]
-                result = self.run_entry(UPDATE_ENTRY, env)
+                result = self.run_entry(UPDATE_ENTRY, env, cwd=directories["run"])
                 self.assertNotEqual(result.returncode, 0)
-                self.assert_nothing_created()
+                self.assert_empty(directories)
 
     def test_a_missing_directory_fails_and_is_not_created(self):
         cases = [
@@ -102,11 +123,14 @@ class JobEntryTestCase(unittest.TestCase):
         ]
         for entry, name in cases:
             with self.subTest(entry=entry.name, name=name):
-                missing = self.root / f"missing-{entry.name}-{name}"
-                result = self.run_entry(entry, self.env(**{name: str(missing)}))
+                label = f"missing-directory-{entry.name}-{name}"
+                env, directories = self.case_env(label)
+                missing = directories["run"].parent / "missing"
+                env[name] = str(missing)
+                result = self.run_entry(entry, env, cwd=directories["run"])
                 self.assertEqual(result.returncode, 1)
                 self.assertFalse(missing.exists())
-                self.assert_nothing_created()
+                self.assert_empty(directories)
 
     def test_python_below_310_fails_without_running_the_cli(self):
         stub = self.bin / "python3"

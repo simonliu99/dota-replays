@@ -127,11 +127,19 @@ Each entry reads `SWITCHBOARD_BULK` (the node's local folder holding
 `update`, `DOTA_DB_COPY_DIR` (a TrueNAS folder for the copy). It exits 1 when
 one is unset or not a directory, and when `python3` is below 3.10.
 
+`DOTA_REPLAY_DIR` and `DOTA_DB_COPY_DIR` must each name a folder inside the
+mounted share, never the mount point itself: an unmounted mount point is an
+empty local directory, which the entries would accept and write to.
+
 `db_copy.py` writes `dota_replays.db.copy` on the local disk with SQLite's
 backup API, checks it with `PRAGMA integrity_check`, copies its bytes to
 `$DOTA_DB_COPY_DIR/dota_replays.db.part` and renames that to
 `dota_replays.db`. No SQLite connection opens a file on the share, and a
 failed run leaves the previous copy in place.
+
+A gap longer than the 100 matches `update` lists, such as a skipped week, is
+fetched by hand on the node: `python3 dota_replays.py --db "$SWITCHBOARD_BULK/dota_replays.db" --replay-dir "$DOTA_REPLAY_DIR"`
+with no `-n`.
 
 `switchboard/policy.example.toml` holds the worker's policy entries; add them
 on the hub's Worker page, set `max_backstop_s` to at least 10,800 and the
