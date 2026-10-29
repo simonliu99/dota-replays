@@ -266,7 +266,7 @@ def build_index(connection: sqlite3.Connection, published_ms: int,
         documents = dict(meta)
         indexed_matches = 0
         for player_id, month in months:
-            if month not in selected:
+            if month not in selected or (player_id, month) in oversized_slots:
                 continue
             document = months[(player_id, month)]
             documents[(document["collection"], document["key"])] = values[
@@ -319,9 +319,12 @@ class Store:
     def _request(self, method: str, collection: str, key: str | None = None,
                  query: str = "", body: bytes | None = None) -> tuple[int, bytes]:
         """Send one request and return its status and body."""
-        path = f"/api/m/{MODULE}/docs/{urllib.parse.quote(collection, safe='')}"
+        # Collection and key go raw: both are limited to `[A-Za-z0-9._:-]`,
+        # whose characters are valid in a path segment, and the hub's router
+        # matches on the raw path, so an encoded `:` is refused as a name.
+        path = f"/api/m/{MODULE}/docs/{collection}"
         if key is not None:
-            path += f"/{urllib.parse.quote(key, safe='')}"
+            path += f"/{key}"
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json",
@@ -336,8 +339,11 @@ class Store:
                 return response.status, response.read()
         except urllib.error.HTTPError as error:
             return error.code, error.read()
-        except urllib.error.URLError as error:
-            raise StoreError(f"{method} {path} failed: {error.reason}") from error
+        except OSError as error:
+            # A read timeout is an OSError and not a URLError; both are the
+            # store's error path.
+            reason = getattr(error, "reason", error)
+            raise StoreError(f"{method} {path} failed: {reason}") from error
 
     def _answer(self, method: str, path: str, status: int, body: bytes,
                 wanted: tuple[int, ...]) -> bytes:
@@ -591,7 +597,7 @@ def main(argv: list[str] | None = None) -> int:
                 heroes = OpenDotaClient(
                     base_url=os.environ.get("OPENDOTA_BASE_URL")
                 ).get_heroes()
-            except (urllib.error.URLError, ValueError) as error:
+            except (OSError, ValueError) as error:
                 logger.warning(
                     f"Could not read OpenDota's hero constants ({error}); "
                     "meta/heroes keeps the store's value"

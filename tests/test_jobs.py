@@ -289,6 +289,7 @@ class JobEntryTestCase(unittest.TestCase):
         self.assertLess(
             output.index("DATABASE STATUS"), output.index("Verifying 1 downloads")
         )
+        self.assertIsNotNone(self.hub.document("meta", "summary"))
 
     def test_a_failed_update_step_does_not_skip_the_later_steps(self):
         log = self.root / "steps.txt"

@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -14,7 +15,7 @@ from unittest import mock
 import publish
 from database import Database
 from tests.fake_hub import FakeHub
-from tests.support import RecordedOpenDota
+from tests.support import RecordedOpenDota, _LocalServer
 
 ROOT = Path(__file__).resolve().parent.parent
 GOLDEN = ROOT / "tests" / "golden"
@@ -30,6 +31,13 @@ JANUARY = "y:797598"    # 2024-01
 def stamp(year: int, month: int, day: int, hour: int = 18) -> int:
     """Return a UTC timestamp for a fixture match's start time."""
     return int(datetime(year, month, day, hour, tzinfo=timezone.utc).timestamp())
+
+
+class _SilentServer(_LocalServer):
+    """A server that accepts a request and never answers it."""
+
+    def handle_request(self, handler, method):
+        time.sleep(2)
 
 
 def seed_database(path, players, matches, details=(), downloads=(), off_disk=()):
@@ -458,6 +466,72 @@ class PublishTestCase(unittest.TestCase):
         self.assertEqual(summary["oldest_indexed_month"], "2024-01")
         self.assertIn("in 1 month documents", log)
 
+    def test_an_oversized_month_beside_another_players_month_is_skipped(self):
+        matches = [
+            {
+                "player_id": PLAYER,
+                "match_id": 8_600_000_000 + number,
+                "start_time": stamp(2024, 2, 1 + number % 28),
+                "duration": 2_400,
+                "hero_id": 100 + number % 30,
+                "kills": 10 + number % 20,
+                "deaths": 10 + number % 20,
+                "assists": 10 + number % 20,
+                "radiant_win": number % 2 == 0,
+                "player_slot": 0,
+            }
+            for number in range(2_000)
+        ]
+        matches.append(
+            {
+                "player_id": PLAYER,
+                "match_id": 8_600_003_000,
+                "start_time": stamp(2024, 1, 10),
+                "duration": 2_000,
+                "hero_id": 3,
+                "kills": 1,
+                "deaths": 1,
+                "assists": 1,
+                "radiant_win": True,
+                "player_slot": 0,
+            }
+        )
+        matches.append(
+            {
+                "player_id": OTHER_PLAYER,
+                "match_id": 8_600_002_000,
+                "start_time": stamp(2024, 2, 10),
+                "duration": 2_000,
+                "hero_id": 3,
+                "kills": 1,
+                "deaths": 1,
+                "assists": 1,
+                "radiant_win": True,
+                "player_slot": 0,
+            }
+        )
+        downloads = [
+            (match["match_id"], f"{match['match_id']}_1891250204.dem.bz2")
+            for match in matches
+        ]
+        seed_database(
+            self.path,
+            [(PLAYER, "Arteezy"), (OTHER_PLAYER, "SumaiL")],
+            matches,
+            downloads=downloads,
+        )
+
+        code, log = self.run_main()
+
+        self.assertEqual(code, 1, log)
+        self.assertIn(f"Skipped 2024-02 of player {PLAYER}", log)
+        self.assertIsNone(self.hub.document(f"matches.{PLAYER}", FEBRUARY))
+        self.assertIsNotNone(self.hub.document(f"matches.{OTHER_PLAYER}", FEBRUARY))
+        self.assertIsNotNone(self.hub.document(f"matches.{PLAYER}", JANUARY))
+        summary = self.hub.document("meta", "summary")
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["indexed_matches"], 2)
+
     def test_a_forced_413_exits_1_and_writes_no_summary(self):
         self.seed_golden()
         self.hub.fail("PUT", f"matches.{PLAYER}", FEBRUARY, 413)
@@ -490,6 +564,19 @@ class PublishTestCase(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertIn("SWITCHBOARD_HUB is not set", log)
+
+    def test_a_hero_fetch_timeout_keeps_the_stored_heroes(self):
+        self.seed_golden()
+        self.assertEqual(self.run_main()[0], 0)
+        stored = self.hub.document("meta", "heroes")
+
+        with mock.patch("publish.OpenDotaClient") as client:
+            client.return_value.get_heroes.side_effect = TimeoutError("timed out")
+            code, log = self.run_main(published_ms=PUBLISHED_MS + 60_000)
+
+        self.assertEqual(code, 0, log)
+        self.assertIn("Could not read OpenDota's hero constants (timed out)", log)
+        self.assertEqual(self.hub.document("meta", "heroes"), stored)
 
     def test_a_replay_file_is_the_recorded_name_or_null(self):
         self.seed_golden()
@@ -558,6 +645,18 @@ class PublishTestCase(unittest.TestCase):
         self.assertIn("8634561781_9999999999.dem.bz2", log)
 
 
+class StoreTimeoutTestCase(unittest.TestCase):
+    def test_a_store_read_timeout_is_a_store_error(self):
+        silent = _SilentServer()
+        self.addCleanup(silent.close)
+        store = publish.Store(silent.base_url, TOKEN, timeout=0.1)
+
+        with self.assertRaises(publish.StoreError) as caught:
+            store.list("meta")
+
+        self.assertIn("timed out", str(caught.exception))
+
+
 class FakeHubRulesTestCase(unittest.TestCase):
     """The fake applies the store's rules, not only the publisher's reading."""
 
@@ -601,6 +700,18 @@ class FakeHubRulesTestCase(unittest.TestCase):
                 status, body = self.raw("GET", path)
                 self.assertEqual(status, 400)
                 self.assertIn(b"invalid", body)
+
+    def test_a_percent_encoded_key_answers_400(self):
+        status, body = self.raw("PUT", "/api/m/dota-replays/docs/c/y%3A1", b"{}")
+
+        self.assertEqual(status, 400)
+        self.assertIn(b"invalid", body)
+        self.assertEqual(self.hub.documents, {})
+
+        status, body = self.raw("PUT", "/api/m/dota-replays/docs/c/y:1", b"{}")
+
+        self.assertEqual(status, 204)
+        self.assertIn(("c", "y:1"), self.hub.documents)
 
     def test_a_list_page_over_200_answers_400(self):
         status, body = self.raw("GET", "/api/m/dota-replays/docs/meta?limit=201")

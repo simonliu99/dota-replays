@@ -10,7 +10,7 @@ answering `next_after`. Its error bodies are shaped as
 
 import json
 import re
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from tests.support import _LocalServer
 
@@ -103,9 +103,14 @@ class FakeHub(_LocalServer):
         handler.wfile.write(payload)
 
     def answer(self, method: str, parsed, body: bytes, headers):
-        if headers.get("Authorization") != f"Bearer {self.token}":
+        authorization = headers.get("Authorization") or ""
+        if not authorization:
             return 401, _error("no-token")
-        parts = [unquote(part) for part in parsed.path.split("/")]
+        if authorization != f"Bearer {self.token}":
+            return 401, _error("invalid-token")
+        # The segments are read raw, as chi's RawPath routing does: a
+        # percent-encoded name reaches the store still encoded and is refused.
+        parts = parsed.path.split("/")
         if (
             len(parts) not in (6, 7)
             or parts[1:3] != ["api", "m"]
@@ -114,7 +119,7 @@ class FakeHub(_LocalServer):
             return 404, _error("not-found")
         module, collection = parts[3], parts[5]
         if module != self.module:
-            return 404, _error("not-found")
+            return 403, _error("wrong-module")
         key = parts[6] if len(parts) == 7 else None
         check_name("collection", collection)
         if key is not None:
@@ -166,9 +171,9 @@ class FakeHub(_LocalServer):
                 }
                 for key in page
             ],
+            # The store always answers the field, null on the last page.
+            "next_after": next_after,
         }
-        if next_after is not None:
-            answer["next_after"] = next_after
         return 200, json.dumps(answer, separators=(",", ":")).encode("utf-8")
 
     def put(self, collection: str, key: str | None, body: bytes):
