@@ -2,7 +2,7 @@
 # Submit one dota-replays job to the switchboard hub.
 #
 # Usage: scripts/switchboard-submit --hub <url> --token-file <file> \
-#            [--not-before HH:MM] update|verify
+#            [--not-before HH:MM] update|verify|check
 #
 # The helper keeps a bare clone of the public repository and fetches master
 # before every submit, so the job runs the commit master points at now.
@@ -18,12 +18,12 @@ CACHE_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/dota-replays-submit
 CLONE_DIR=$CACHE_DIR/repo.git
 
 usage() {
-    printf 'usage: %s --hub <url> --token-file <file> [--not-before HH:MM] update|verify\n' "$0" >&2
+    printf 'usage: %s --hub <url> --token-file <file> [--not-before HH:MM] update|verify|check\n' "$0" >&2
     exit 2
 }
 
 help() {
-    printf 'usage: %s --hub <url> --token-file <file> [--not-before HH:MM] update|verify\n' "$0"
+    printf 'usage: %s --hub <url> --token-file <file> [--not-before HH:MM] update|verify|check\n' "$0"
     exit 0
 }
 
@@ -83,6 +83,10 @@ case "$task" in
     verify)
         backstop=1800
         quiet=600
+        ;;
+    check)
+        backstop=600
+        quiet=300
         ;;
     '')
         usage

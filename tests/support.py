@@ -72,6 +72,12 @@ class _LocalServer:
             def do_POST(self):
                 owner.handle_request(self, "POST")
 
+            def do_PUT(self):
+                owner.handle_request(self, "PUT")
+
+            def do_DELETE(self):
+                owner.handle_request(self, "DELETE")
+
         return Handler
 
     @property

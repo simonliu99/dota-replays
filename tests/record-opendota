@@ -59,6 +59,9 @@ def main() -> None:
         raise SystemExit(f"player {player_id} has no recent matches")
     for match_id in match_ids:
         responses.append(get(f"/matches/{match_id}"))
+    # The hero constants are a list, not an object: publish.py turns it into
+    # the meta/heroes document.
+    responses.append(get("/heroes"))
 
     for response in responses:
         size = len(json.dumps(response["body"]).encode("utf-8"))

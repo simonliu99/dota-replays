@@ -3,6 +3,8 @@
 # node's own paths; `since` is the oldest commit the worker may run.
 #
 # The worker needs max_backstop_s of at least 10800 and bulk-dota-replays=1.
+# The tasks' backstops are update 10800, verify 1800 and check 600; the submit
+# helper passes the same numbers.
 # DOTA_REPLAY_DIR and DOTA_DB_COPY_DIR are folders inside the TrueNAS mount
 # (here /mnt/truenas), never the mount point itself, so an unmounted share
 # fails the job instead of filling the local disk.
@@ -27,3 +29,11 @@ entry = "jobs/verify"
 args = []
 secrets = ["SWITCHBOARD_MODULE_TOKEN"]
 supply = { SWITCHBOARD_BULK = "/srv/dota-replays", DOTA_REPLAY_DIR = "/mnt/truenas/dota-replays/replays", DOTA_DB_COPY_DIR = "/mnt/truenas/dota-replays/db", SWITCHBOARD_HUB = "https://switchboard.example.com" }
+
+[[task]]
+repo = "simonliu99/dota-replays"
+name = "check"
+entry = "jobs/check"
+args = []
+secrets = ["SWITCHBOARD_MODULE_TOKEN"]
+supply = { SWITCHBOARD_BULK = "/srv/dota-replays", SWITCHBOARD_HUB = "https://switchboard.example.com" }

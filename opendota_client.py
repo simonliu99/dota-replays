@@ -170,6 +170,20 @@ class OpenDotaClient:
             logger.error(f"Failed to get match {match_id}: {response.status_code}")
         return None
 
+    def get_heroes(self) -> dict[int, str] | None:
+        """Get the localized hero names by hero id, or None on a failure."""
+        response = self._request("GET", "/heroes")
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                hero["id"]: hero["localized_name"]
+                for hero in data
+                if "id" in hero and "localized_name" in hero
+            }
+
+        logger.error(f"Failed to get the hero constants: {response.status_code}")
+        return None
+
     def request_parse(self, match_id: int) -> int | None:
         """
         Submit a parse request for a match.

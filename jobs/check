@@ -1,0 +1,26 @@
+#!/bin/sh
+# switchboard job entry: compare the published match index with the database.
+#
+# Read-only on the dataset and the store. The entry exits 1 on any difference,
+# which is the job's failed status: the index the page lists has drifted from
+# the database. The worker supplies SWITCHBOARD_BULK (the local folder holding
+# the database) and SWITCHBOARD_HUB, plus SWITCHBOARD_MODULE_TOKEN as a task
+# secret. The entry never creates a folder.
+
+set -eu
+
+cd "$(dirname "$0")/.."
+
+: "${SWITCHBOARD_BULK:?SWITCHBOARD_BULK is not set}"
+[ -d "$SWITCHBOARD_BULK" ] || {
+    printf '%s: SWITCHBOARD_BULK is not a directory: %s\n' "$0" "$SWITCHBOARD_BULK" >&2
+    exit 1
+}
+
+python3 --version
+if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+    printf '%s: python3 is below 3.10\n' "$0" >&2
+    exit 1
+fi
+
+python3 publish.py --check

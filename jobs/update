@@ -1,10 +1,13 @@
 #!/bin/sh
-# switchboard job entry: update every tracked player, then copy the database.
+# switchboard job entry: update every tracked player, copy the database, then
+# publish the match index.
 #
 # The worker supplies SWITCHBOARD_BULK (the local folder holding the
 # database), DOTA_REPLAY_DIR (the TrueNAS replay folder) and DOTA_DB_COPY_DIR
 # (the TrueNAS folder for the checked copy). The entry never creates one, so
-# a missing mount fails the job instead of writing to the local disk.
+# a missing mount fails the job instead of writing to the local disk. The
+# publish step reads SWITCHBOARD_HUB and SWITCHBOARD_MODULE_TOKEN and exits 1
+# when either is unset.
 
 set -eu
 
@@ -60,6 +63,7 @@ run_step recheck-parsing python3 dota_replays.py \
     -n 30 \
     --parse-wait-budget 300
 run_step database-copy python3 db_copy.py
+run_step publish python3 publish.py
 
 [ "$failed" -eq 0 ] || {
     printf '%s: one or more steps failed\n' "$0" >&2

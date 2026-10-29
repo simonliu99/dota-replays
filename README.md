@@ -112,20 +112,37 @@ point it at a local fake, and a normal run leaves it unset.
 ## Run under switchboard
 
 A switchboard worker on the Maryland node runs these jobs from `jobs/`:
-`update` on a weekly trigger, and `verify` when the replays on disk need
-checking. The worker supplies the dataset's paths, and the entries never
+`update` on a weekly trigger, `verify` when the replays on disk need
+checking, and `check` when the published match index needs comparing with
+the database. The worker supplies the dataset's paths, and the entries never
 create one, so a missing mount fails the job instead of writing to the local
 disk.
 
 | Job | Entry | What it does | Backstop | Quiet limit |
 | --- | --- | --- | --- | --- |
-| `update` | `jobs/update` | Updates every tracked player's 100 newest matches, rechecks 30 unparsed matches, then writes a checked copy of the database | 10,800 s | 600 s |
-| `verify` | `jobs/verify` | Prints `--status`, then checks every recorded replay on disk | 1,800 s | 600 s |
+| `update` | `jobs/update` | Updates every tracked player's 100 newest matches, rechecks 30 unparsed matches, writes a checked copy of the database, then publishes the match index | 10,800 s | 600 s |
+| `verify` | `jobs/verify` | Prints `--status`, checks every recorded replay on disk, then publishes the match index | 1,800 s | 600 s |
+| `check` | `jobs/check` | Compares the published match index with the database and exits 1 on a difference | 600 s | 300 s |
 
 Each entry reads `SWITCHBOARD_BULK` (the node's local folder holding
-`dota_replays.db`), `DOTA_REPLAY_DIR` (the TrueNAS replay folder) and, for
-`update`, `DOTA_DB_COPY_DIR` (a TrueNAS folder for the copy). It exits 1 when
-one is unset or not a directory, and when `python3` is below 3.10.
+`dota_replays.db`); `update` and `verify` also read `DOTA_REPLAY_DIR` (the
+TrueNAS replay folder), and `update` reads `DOTA_DB_COPY_DIR` (a TrueNAS
+folder for the copy). It exits 1 when one is unset or not a directory, and
+when `python3` is below 3.10. The publish step also reads `SWITCHBOARD_HUB`
+and the task secret `SWITCHBOARD_MODULE_TOKEN`.
+
+`publish.py` writes the match index to the module's document store on the
+hub: one document per player per month (`matches.<player_id>`, key
+`y:<999999 - yyyymm>`), newest month first, plus `meta/players`,
+`meta/heroes` and `meta/summary`, which it writes last. A month document
+holds at most 256 KiB, so the index keeps whole months, newest first, while
+the module's stored bytes stay at or under 12 MiB; a month over the value
+limit is skipped and the run exits 1 naming it. Each run lists the store's
+keys, writes only the documents whose value changed, and deletes the keys
+the database no longer indexes, so a hub restored from an older copy is
+repaired on the next run. `check` (`python3 publish.py --check`) lists the
+same documents and exits 1 unless the stored index equals the database's,
+including each match's `replay_file`.
 
 `DOTA_REPLAY_DIR` and `DOTA_DB_COPY_DIR` must each name a folder inside the
 mounted share, never the mount point itself: an unmounted mount point is an
