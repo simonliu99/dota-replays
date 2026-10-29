@@ -242,6 +242,25 @@ class ExitCodeTestCase(unittest.TestCase):
         self.assertEqual(client.parse_calls, [UNPARSED_MATCH])
         self.assertIn("1 failed request", output[-1])
 
+    def test_a_refresh_against_a_refused_connection_exits_one(self):
+        db = self.seed_players([PLAYER_A])
+        db.insert_matches(PLAYER_A, [match(match_id) for match_id in MATCH_IDS])
+        stored = {
+            match_id: {"match_id": match_id, "version": 21}
+            for match_id in MATCH_IDS
+        }
+        for match_id, details in stored.items():
+            db.upsert_match_details(match_id, details)
+        client = opendota_client.OpenDotaClient(base_url="http://127.0.0.1:9/api")
+
+        with mock.patch.object(opendota_client.time, "sleep"):
+            code, output = self.run_main("--refresh", client=client)
+
+        self.assertEqual(code, 1)
+        for match_id, details in stored.items():
+            self.assertEqual(db.get_match_details(match_id), details)
+        self.assertIn("3 failed requests", output[-1])
+
     def test_a_replay_answering_not_found_exits_zero(self):
         server = ReplayServer(b"", status=404)
         self.addCleanup(server.close)
