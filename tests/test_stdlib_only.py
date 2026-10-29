@@ -5,7 +5,13 @@ import sys
 import unittest
 
 THIRD_PARTY = ("requests", "tqdm", "dotenv", "wget")
-APP_MODULES = ("database", "opendota_client", "dota_replays", "migrate_pkl_to_sqlite")
+APP_MODULES = (
+    "database",
+    "opendota_client",
+    "dota_replays",
+    "db_copy",
+    "migrate_pkl_to_sqlite",
+)
 
 
 class TestStandardLibraryOnly(unittest.TestCase):
