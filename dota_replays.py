@@ -5,22 +5,25 @@ DotA Replay Downloader
 Downloads match replays and caches OpenDota parsed data.
 """
 
-import os
-import sys
 import argparse
 import logging
-from pathlib import Path
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta
-
-import requests
-from tqdm import tqdm
-from dotenv import load_dotenv
+from pathlib import Path
 
 from database import Database
 from opendota_client import OpenDotaClient
 
-# Load environment variables from .env file
-load_dotenv()
+# Seconds a replay download may stay silent before it fails.
+DOWNLOAD_TIMEOUT = 60
+DOWNLOAD_CHUNK_SIZE = 8192
+
+# Log a progress line every this many items instead of a live progress bar.
+PROGRESS_INTERVAL = 25
 
 # Configure logging
 logging.basicConfig(
@@ -29,6 +32,33 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def _load_dotenv() -> None:
+    """Load .env when python-dotenv is installed; the program runs without it."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv()
+
+
+def _progress(items: list, description: str):
+    """Yield items, logging a progress line every 25 items and at the end."""
+    total = len(items)
+    for position, item in enumerate(items, start=1):
+        if position % PROGRESS_INTERVAL == 0 or position == total:
+            logger.info(f"{description}: {position}/{total}")
+        yield item
+
+
+def _describe_download_error(error: Exception) -> str:
+    """Return a short message for a failed replay download."""
+    if isinstance(error, urllib.error.HTTPError):
+        return f"{error.code} {error.reason}"
+    if isinstance(error, urllib.error.URLError) and isinstance(error.reason, TimeoutError):
+        return "Timeout"
+    return str(error)[:50]
 
 
 class DotaReplays:
@@ -99,7 +129,7 @@ class DotaReplays:
         # OpenDota recommends 21 days as the threshold for replay availability
         cutoff = datetime.now() - timedelta(days=21)
 
-        for match in tqdm(matches, desc="Fetching details"):
+        for match in _progress(matches, "Fetching details"):
             match_id = match["match_id"]
             start_time = datetime.fromtimestamp(match["start_time"])
 
@@ -133,7 +163,7 @@ class DotaReplays:
             return
 
         logger.info(f"Re-checking {len(matches)} unparsed matches...")
-        for match in tqdm(matches, desc="Re-checking parses"):
+        for match in _progress(matches, "Re-checking parses"):
             match_id = match["match_id"]
             
             # Request parse
@@ -150,6 +180,46 @@ class DotaReplays:
                     # If not waiting, we still want to refresh details later
                     # but for now we've triggered the parse
                     pass
+
+    def _download_replay(self, match_id: int, replay_url: str, filepath: Path) -> int:
+        """Download one replay to filepath and return the bytes written.
+
+        The body is written to <filename>.part and renamed only once the whole
+        body is written, so a failed download leaves no replay file behind.
+        """
+        part_path = filepath.with_name(f"{filepath.name}.part")
+        started = time.monotonic()
+        written = 0
+        try:
+            request = urllib.request.Request(
+                replay_url, headers={"User-Agent": "dota-replays/1.0"}
+            )
+            with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
+                expected_header = response.headers.get("Content-Length")
+                expected = (
+                    int(expected_header)
+                    if expected_header and expected_header.isdigit()
+                    else None
+                )
+                with open(part_path, "wb") as handle:
+                    while True:
+                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        written += len(chunk)
+            if expected is not None and expected != written:
+                raise OSError(f"incomplete download: {written} of {expected} bytes")
+            os.replace(part_path, filepath)
+        except BaseException:
+            part_path.unlink(missing_ok=True)
+            raise
+
+        logger.info(
+            f"Downloaded replay for match {match_id}: {written} bytes in "
+            f"{time.monotonic() - started:.1f}s"
+        )
+        return written
 
     def _download_replays(self, force_retry: bool = False) -> None:
         """Download replay files for matches with replay URLs."""
@@ -189,9 +259,9 @@ class DotaReplays:
         logger.info(f"Downloading {len(eligible)} replays...")
         success = 0
         failed = 0
-        errors = []  # Collect errors to print after progress bar
+        errors = []  # Collect errors to print after the downloads
 
-        for match in tqdm(eligible, desc="Downloading"):
+        for match in _progress(eligible, "Downloading"):
             match_id = match["match_id"]
             replay_url = match["replay_url"]
 
@@ -203,39 +273,25 @@ class DotaReplays:
 
             if filepath.exists():
                 # Already on disk, just record it
-                self.db.record_download(match_id, filename, filepath.stat().st_size)
+                file_size = filepath.stat().st_size
+                self.db.record_download(match_id, filename, file_size)
                 self.db.clear_download_attempts(match_id)
+                logger.info(
+                    f"Replay for match {match_id} already on disk: {file_size} bytes"
+                )
                 continue
 
             try:
-                response = requests.get(replay_url, stream=True, timeout=60)
-                response.raise_for_status()
-                with open(filepath, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                file_size = filepath.stat().st_size
+                file_size = self._download_replay(match_id, replay_url, filepath)
                 self.db.record_download(match_id, filename, file_size)
                 self.db.clear_download_attempts(match_id)
                 success += 1
             except Exception as e:
-                # Parse common HTTP errors for cleaner output
-                error_msg = str(e)
-                if "502" in error_msg:
-                    short_error = "502 Bad Gateway"
-                elif "404" in error_msg:
-                    short_error = "404 Not Found"
-                elif "503" in error_msg:
-                    short_error = "503 Service Unavailable"
-                elif "timeout" in error_msg.lower():
-                    short_error = "Timeout"
-                else:
-                    short_error = error_msg[:50]
-                
-                errors.append((match_id, short_error))
-                self.db.record_download_attempt(match_id, error_msg[:200])
+                errors.append((match_id, _describe_download_error(e)))
+                self.db.record_download_attempt(match_id, str(e)[:200])
                 failed += 1
 
-        # Print summary after progress bar
+        # Print summary after the downloads
         logger.info(f"Downloaded {success} replays, {failed} failed")
         
         # Show failed downloads if any
@@ -254,7 +310,7 @@ class DotaReplays:
         logger.info(f"Verifying {len(downloads)} downloads...")
         missing = []
 
-        for dl in tqdm(downloads, desc="Verifying"):
+        for dl in _progress(downloads, "Verifying"):
             match_id = dl["match_id"]
             filename = dl["filename"]
             filepath = self.replay_dir / filename
@@ -304,7 +360,7 @@ class DotaReplays:
         unmatched = 0
         unmatched_files = []
 
-        for filepath in tqdm(replay_files, desc="Scanning"):
+        for filepath in _progress(replay_files, "Scanning"):
             filename = filepath.name
             match_id = None
 
@@ -378,7 +434,7 @@ class DotaReplays:
         success = 0
         still_missing = 0
 
-        for match in tqdm(matches, desc="Refreshing"):
+        for match in _progress(matches, "Refreshing"):
             match_id = match["match_id"]
             
             # Delete old details and re-fetch
@@ -402,7 +458,7 @@ class DotaReplays:
         logger.info(f"Re-downloading {len(missing)} missing files...")
         success = 0
 
-        for dl in tqdm(missing, desc="Re-downloading"):
+        for dl in _progress(missing, "Re-downloading"):
             match_id = dl["match_id"]
 
             # Get replay URL from match details
@@ -416,12 +472,7 @@ class DotaReplays:
             filepath = self.replay_dir / filename
 
             try:
-                response = requests.get(replay_url, stream=True, timeout=60)
-                response.raise_for_status()
-                with open(filepath, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                file_size = filepath.stat().st_size
+                file_size = self._download_replay(match_id, replay_url, filepath)
                 self.db.record_download(match_id, filename, file_size)
                 success += 1
             except Exception as e:
@@ -523,6 +574,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """Main entry point."""
+    _load_dotenv()
     args = parse_args()
 
     if args.verbose:

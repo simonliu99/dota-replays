@@ -16,18 +16,22 @@ import logging
 from pathlib import Path
 from glob import glob
 
-from dotenv import load_dotenv
-
 from database import Database
-
-# Load environment variables from .env file
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _load_dotenv() -> None:
+    """Load .env when python-dotenv is installed; the program runs without it."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv()
 
 
 def consolidate_replay_folders(target_dir: Path, dry_run: bool = False) -> int:
@@ -147,6 +151,7 @@ def migrate_pkl_file(pkl_path: Path, db: Database, dry_run: bool = False) -> boo
 
 
 def main() -> None:
+    _load_dotenv()
     parser = argparse.ArgumentParser(
         description="Migrate .pkl files to SQLite database"
     )
