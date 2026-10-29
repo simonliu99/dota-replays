@@ -25,6 +25,9 @@ DOWNLOAD_CHUNK_SIZE = 8192
 # Log a progress line every this many items instead of a live progress bar.
 PROGRESS_INTERVAL = 25
 
+# One parse wait polls for at most this long, as poll_parse_completion defaults.
+PARSE_WAIT_TIMEOUT = 300
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -74,6 +77,7 @@ class DotaReplays:
         replay_dir: Path,
         wait_for_parse: bool = True,
         force_refresh: bool = False,
+        parse_wait_budget: int | None = None,
     ):
         self.db = db
         self.client = client
@@ -81,7 +85,38 @@ class DotaReplays:
         self.wait_for_parse = wait_for_parse
         self.force_refresh = force_refresh
         self.force_retry = False  # Set via main() when --force-retry is used
+        self.parse_wait_budget = parse_wait_budget
+        self._parse_wait_deadline: float | None = None
         self.replay_dir.mkdir(parents=True, exist_ok=True)
+
+    def _parse_wait_remaining(self) -> int:
+        """Return the whole seconds of this run's parse wait budget that remain."""
+        if self._parse_wait_deadline is None:
+            self._parse_wait_deadline = time.monotonic() + self.parse_wait_budget
+        remaining = self._parse_wait_deadline - time.monotonic()
+        if remaining <= 0:
+            return 0
+        return min(PARSE_WAIT_TIMEOUT, int(remaining))
+
+    def _poll_parse(self, match_id: int, job_id: int) -> bool:
+        """Wait for a parse job within this run's remaining wait budget.
+
+        With no budget the wait is today's, one poll for up to
+        PARSE_WAIT_TIMEOUT seconds. Once the budget is spent, the run requests
+        the parse and moves on, so the match stays unparsed for the next
+        recheck.
+        """
+        if self.parse_wait_budget is None:
+            logger.info(f"Waiting for parse of match {match_id}...")
+            return self.client.poll_parse_completion(job_id)
+        timeout = self._parse_wait_remaining()
+        if timeout <= 0:
+            logger.info(
+                f"Parse wait budget spent; match {match_id} is left for the recheck"
+            )
+            return False
+        logger.info(f"Waiting up to {timeout}s for parse of match {match_id}...")
+        return self.client.poll_parse_completion(job_id, timeout=timeout)
 
     def update_player(self, player_id: int, limit: int | None = None) -> None:
         """Update match data for a single player."""
@@ -146,8 +181,7 @@ class DotaReplays:
                 if job_id:
                     self.db.record_parse_request(match_id, job_id)
                     if self.wait_for_parse:
-                        logger.info(f"Waiting for parse of match {match_id}...")
-                        if self.client.poll_parse_completion(job_id):
+                        if self._poll_parse(match_id, job_id):
                             self.db.mark_parse_complete(match_id)
                             # 3. Final fetch after parse
                             details = self.client.get_match_details(match_id) or details
@@ -171,7 +205,7 @@ class DotaReplays:
             if job_id:
                 self.db.record_parse_request(match_id, job_id)
                 if self.wait_for_parse:
-                    if self.client.poll_parse_completion(job_id):
+                    if self._poll_parse(match_id, job_id):
                         self.db.mark_parse_complete(match_id)
                         details = self.client.get_match_details(match_id)
                         if details:
@@ -507,6 +541,13 @@ def parse_args() -> argparse.Namespace:
         help="Do not wait for parse jobs to complete (default: wait is enabled)",
     )
     parser.add_argument(
+        "--parse-wait-budget",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help="Cap the total parse wait of one run in seconds (default: no cap)",
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="Verify all downloaded files exist on disk",
@@ -586,7 +627,10 @@ def main() -> None:
 
     # Initialize components
     db = Database(args.db)
-    client = OpenDotaClient(api_key=args.api_key)
+    client = OpenDotaClient(
+        api_key=args.api_key,
+        base_url=os.environ.get("OPENDOTA_BASE_URL"),
+    )
     replay_dir = Path(args.replay_dir)
 
     app = DotaReplays(
@@ -595,6 +639,7 @@ def main() -> None:
         replay_dir=replay_dir,
         wait_for_parse=args.wait_for_parse,
         force_refresh=args.force_refresh,
+        parse_wait_budget=args.parse_wait_budget,
     )
     app.force_retry = args.force_retry
 

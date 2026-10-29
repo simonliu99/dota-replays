@@ -1,0 +1,36 @@
+#!/bin/sh
+# switchboard job entry: print the database status, then verify the replays.
+#
+# The worker supplies SWITCHBOARD_BULK (the local folder holding the database)
+# and DOTA_REPLAY_DIR (the TrueNAS replay folder). The entry never creates one,
+# so a missing mount fails the job instead of writing to the local disk.
+
+set -eu
+
+cd "$(dirname "$0")/.."
+
+: "${SWITCHBOARD_BULK:?SWITCHBOARD_BULK is not set}"
+[ -d "$SWITCHBOARD_BULK" ] || {
+    printf '%s: SWITCHBOARD_BULK is not a directory: %s\n' "$0" "$SWITCHBOARD_BULK" >&2
+    exit 1
+}
+: "${DOTA_REPLAY_DIR:?DOTA_REPLAY_DIR is not set}"
+[ -d "$DOTA_REPLAY_DIR" ] || {
+    printf '%s: DOTA_REPLAY_DIR is not a directory: %s\n' "$0" "$DOTA_REPLAY_DIR" >&2
+    exit 1
+}
+
+python3 --version
+if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+    printf '%s: python3 is below 3.10\n' "$0" >&2
+    exit 1
+fi
+
+python3 dota_replays.py \
+    --db "$SWITCHBOARD_BULK/dota_replays.db" \
+    --replay-dir "$DOTA_REPLAY_DIR" \
+    --status
+python3 dota_replays.py \
+    --db "$SWITCHBOARD_BULK/dota_replays.db" \
+    --replay-dir "$DOTA_REPLAY_DIR" \
+    --verify

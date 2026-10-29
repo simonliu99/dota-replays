@@ -1,0 +1,137 @@
+#!/bin/sh
+# Submit one dota-replays job to the switchboard hub.
+#
+# Usage: scripts/switchboard-submit --hub <url> --token-file <file> \
+#            [--not-before HH:MM] update|verify
+#
+# The helper keeps a bare clone of the public repository and fetches master
+# before every submit, so the job runs the commit master points at now.
+# --not-before refuses a run before that Pacific time: launchd runs a calendar
+# time missed while the Mac slept at its next wake, and a wake in the small
+# hours then submits nothing; the following Thursday's time does.
+
+set -eu
+
+REPOSITORY=simonliu99/dota-replays
+REPOSITORY_URL=https://github.com/simonliu99/dota-replays.git
+CACHE_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/dota-replays-submit
+CLONE_DIR=$CACHE_DIR/repo.git
+
+usage() {
+    printf 'usage: %s --hub <url> --token-file <file> [--not-before HH:MM] update|verify\n' "$0" >&2
+    exit 2
+}
+
+help() {
+    printf 'usage: %s --hub <url> --token-file <file> [--not-before HH:MM] update|verify\n' "$0"
+    exit 0
+}
+
+# Print HHMM as minutes since midnight, in decimal.
+minutes() {
+    hour=$(printf '%s' "$1" | cut -c1-2)
+    minute=$(printf '%s' "$1" | cut -c3-4)
+    hour=${hour#0}
+    minute=${minute#0}
+    printf '%s\n' $(( ${hour:-0} * 60 + ${minute:-0} ))
+}
+
+hub=''
+token_file=''
+not_before=''
+task=''
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --hub)
+            [ $# -ge 2 ] || usage
+            hub=$2
+            shift 2
+            ;;
+        --token-file)
+            [ $# -ge 2 ] || usage
+            token_file=$2
+            shift 2
+            ;;
+        --not-before)
+            [ $# -ge 2 ] || usage
+            not_before=$2
+            shift 2
+            ;;
+        -h|--help)
+            help
+            ;;
+        -*)
+            usage
+            ;;
+        *)
+            [ -z "$task" ] || usage
+            task=$1
+            shift
+            ;;
+    esac
+done
+
+[ -n "$hub" ] || { printf '%s: --hub is required\n' "$0" >&2; exit 2; }
+[ -n "$token_file" ] || { printf '%s: --token-file is required\n' "$0" >&2; exit 2; }
+[ -f "$token_file" ] || { printf '%s: token file not found: %s\n' "$0" "$token_file" >&2; exit 2; }
+
+case "$task" in
+    update)
+        backstop=10800
+        quiet=600
+        ;;
+    verify)
+        backstop=1800
+        quiet=600
+        ;;
+    '')
+        usage
+        ;;
+    *)
+        printf '%s: unknown task %s\n' "$0" "$task" >&2
+        exit 2
+        ;;
+esac
+
+if [ -n "$not_before" ]; then
+    case "$not_before" in
+        [0-9][0-9]:[0-9][0-9]) ;;
+        *)
+            printf '%s: --not-before %s is not HH:MM\n' "$0" "$not_before" >&2
+            exit 2
+            ;;
+    esac
+    now=$(minutes "$(TZ=America/Los_Angeles date +%H%M)")
+    limit=$(minutes "$(printf '%s' "$not_before" | tr -d ':')")
+    if [ "$now" -lt "$limit" ]; then
+        printf '%s: Pacific time is before %s, not submitting\n' "$0" "$not_before" >&2
+        exit 0
+    fi
+fi
+
+if [ ! -d "$CLONE_DIR" ]; then
+    mkdir -p "$CACHE_DIR"
+    git clone --bare "$REPOSITORY_URL" "$CLONE_DIR"
+fi
+git --git-dir="$CLONE_DIR" fetch origin master
+sha=$(git --git-dir="$CLONE_DIR" rev-parse FETCH_HEAD)
+tree=$(git --git-dir="$CLONE_DIR" rev-parse "$sha^{tree}")
+
+exec switchboard submit \
+    --hub "$hub" \
+    --token-file "$token_file" \
+    --project dota-replays \
+    --task "$task" \
+    --code git \
+    --repo "$REPOSITORY" \
+    --url "$REPOSITORY_URL" \
+    --base "$sha" \
+    --commit "$sha" \
+    --tree "$tree" \
+    --entry "jobs/$task" \
+    --gres bulk-dota-replays=1 \
+    --secret SWITCHBOARD_MODULE_TOKEN \
+    --demand-cores 1 \
+    --demand-mem-mb 512 \
+    --backstop "$backstop" \
+    --quiet "$quiet"
