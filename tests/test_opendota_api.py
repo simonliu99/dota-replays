@@ -18,6 +18,21 @@ from tests.support import (
 )
 
 
+class StalledAnswer:
+    """A response whose headers arrived and whose body never finishes."""
+
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self):
+        raise TimeoutError("the read timed out")
+
+
 class FakeOpenDotaTestCase(unittest.TestCase):
     def setUp(self):
         self.fixture = load_fixture()
@@ -80,6 +95,19 @@ class FakeOpenDotaTestCase(unittest.TestCase):
                 ("GET", self.match_path()),
             ],
         )
+
+    def test_a_read_timeout_answers_a_failed_fetch(self):
+        client = self.client()
+        with mock.patch.object(
+            opendota_client.urllib.request, "urlopen", return_value=StalledAnswer()
+        ):
+            self.assertIsNone(client.get_player(self.player_id))
+            self.assertIsNone(client.get_player_matches(self.player_id))
+
+    def test_a_refused_connection_answers_a_failed_fetch(self):
+        client = opendota_client.OpenDotaClient(base_url="http://127.0.0.1:9/api")
+        with mock.patch.object(opendota_client.time, "sleep"):
+            self.assertIsNone(client.get_player(self.player_id))
 
     def test_every_request_sets_a_thirty_second_timeout(self):
         client = self.client()

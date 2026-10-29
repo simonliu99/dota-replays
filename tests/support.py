@@ -97,6 +97,7 @@ class RecordedOpenDota(_LocalServer):
             entry["path"]: entry["body"] for entry in self.fixture["responses"]
         }
         self.failures: dict[tuple[str, str], list[int]] = {}
+        self.truncations: dict[str, int] = {}
         self.requests: list[tuple[str, str]] = []
         super().__init__()
 
@@ -104,37 +105,65 @@ class RecordedOpenDota(_LocalServer):
         """Answer the next len(statuses) requests for path with these statuses."""
         self.failures[(method, path)] = list(statuses)
 
-    def handle_request(self, handler: BaseHTTPRequestHandler, method: str) -> None:
-        path = urlsplit(handler.path).path
-        self.requests.append((method, path))
-        statuses = self.failures.get((method, path))
-        if statuses:
-            status = statuses.pop(0)
-            body = b'{"error": "injected failure"}'
-        elif path in self.responses:
-            status = 200
-            body = json.dumps(self.responses[path]).encode("utf-8")
-        else:
-            status = 404
-            body = b'{"error": "not recorded"}'
+    def truncate_next(self, path: str, times: int = 1) -> None:
+        """Send the next times answers for path with their body cut short."""
+        self.truncations[path] = times
+
+    def _write(self, handler: BaseHTTPRequestHandler, status: int, body: bytes) -> None:
         handler.send_response(status)
         handler.send_header("Content-Type", "application/json")
         handler.send_header("Content-Length", str(len(body)))
         handler.end_headers()
         handler.wfile.write(body)
 
+    def handle_request(self, handler: BaseHTTPRequestHandler, method: str) -> None:
+        path = urlsplit(handler.path).path
+        self.requests.append((method, path))
+        statuses = self.failures.get((method, path))
+        if statuses:
+            status = statuses.pop(0)
+            self._write(handler, status, b'{"error": "injected failure"}')
+            return
+        if path not in self.responses:
+            self._write(handler, 404, b'{"error": "not recorded"}')
+            return
+
+        body = json.dumps(self.responses[path]).encode("utf-8")
+        truncations = self.truncations.get(path, 0)
+        if truncations:
+            # Announce the whole body and send half of it, so the client's
+            # read() raises IncompleteRead as it would on a stalled connection.
+            self.truncations[path] = truncations - 1
+            handler.send_response(200)
+            handler.send_header("Content-Type", "application/json")
+            handler.send_header("Content-Length", str(len(body)))
+            handler.end_headers()
+            handler.wfile.write(body[: len(body) // 2])
+            handler.wfile.flush()
+            handler.close_connection = True
+            return
+
+        self._write(handler, 200, body)
+
 
 class ReplayServer(_LocalServer):
     """Serve one replay body, optionally cutting the first attempt short."""
 
-    def __init__(self, body: bytes, truncate_first: bool = False):
+    def __init__(self, body: bytes, truncate_first: bool = False, status: int = 200):
         self.body = body
         self.truncate_first = truncate_first
+        self.status = status
         self.requests: list[tuple[str, str]] = []
         super().__init__()
 
     def handle_request(self, handler: BaseHTTPRequestHandler, method: str) -> None:
         self.requests.append((method, urlsplit(handler.path).path))
+        if self.status != 200:
+            handler.send_response(self.status)
+            handler.send_header("Content-Type", "application/json")
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+            return
         handler.send_response(200)
         handler.send_header("Content-Type", "application/x-bzip2")
         handler.send_header("Content-Length", str(len(self.body)))

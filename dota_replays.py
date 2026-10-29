@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 from database import Database
 from opendota_client import OpenDotaClient
@@ -62,6 +63,24 @@ def _describe_download_error(error: Exception) -> str:
     if isinstance(error, urllib.error.URLError) and isinstance(error.reason, TimeoutError):
         return "Timeout"
     return str(error)[:50]
+
+
+class PlayerUpdate(NamedTuple):
+    """What one player's update fetched and how many detail fetches failed."""
+
+    player_fetched: bool
+    matches_fetched: bool
+    failed_details: int = 0
+
+    @property
+    def succeeded(self) -> bool:
+        """Return whether the player, its match list and every detail came in."""
+        return self.player_fetched and self.matches_fetched and not self.failed_details
+
+
+def _plural(noun: str, plural: str, count: int) -> str:
+    """Return "1 failed player update" or "2 failed player updates"."""
+    return f"{count} {noun if count == 1 else plural}"
 
 
 class DotaReplays:
@@ -118,15 +137,15 @@ class DotaReplays:
         logger.info(f"Waiting up to {timeout}s for parse of match {match_id}...")
         return self.client.poll_parse_completion(job_id, timeout=timeout)
 
-    def update_player(self, player_id: int, limit: int | None = None) -> None:
-        """Update match data for a single player."""
+    def update_player(self, player_id: int, limit: int | None = None) -> PlayerUpdate:
+        """Update match data for a single player and report what was fetched."""
         logger.info(f"Updating player {player_id}")
 
         # Validate and register player
         player = self.client.get_player(player_id)
         if not player or "profile" not in player:
             logger.error(f"Player {player_id} not found")
-            return
+            return PlayerUpdate(player_fetched=False, matches_fetched=False)
 
         persona_name = player.get("profile", {}).get("personaname")
         self.db.upsert_player(player_id, persona_name)
@@ -135,21 +154,31 @@ class DotaReplays:
         # Fetch matches
         logger.info("Fetching match list...")
         matches = self.client.get_player_matches(player_id, limit=limit)
+        if matches is None:
+            logger.error(f"Failed to fetch the match list for player {player_id}")
+            return PlayerUpdate(player_fetched=True, matches_fetched=False)
+
         if not matches:
             logger.warning("No matches found")
-            return
+            return PlayerUpdate(player_fetched=True, matches_fetched=True)
 
         new_count = self.db.insert_matches(player_id, matches)
         logger.info(f"Found {len(matches)} matches, {new_count} new")
 
         # Get details for matches without cache
-        self._fetch_match_details(player_id, limit)
+        failed_details = self._fetch_match_details(player_id, limit)
 
         # Download replays
         self._download_replays(force_retry=self.force_retry)
 
-    def _fetch_match_details(self, player_id: int, limit: int | None = None) -> None:
-        """Fetch and cache match details from OpenDota."""
+        return PlayerUpdate(
+            player_fetched=True,
+            matches_fetched=True,
+            failed_details=failed_details,
+        )
+
+    def _fetch_match_details(self, player_id: int, limit: int | None = None) -> int:
+        """Fetch and cache match details, returning how many fetches failed."""
         if self.force_refresh:
             logger.info(f"Force refreshing details for last {limit or 'all'} matches...")
             matches = self.db.get_recent_matches(player_id, limit)
@@ -158,11 +187,12 @@ class DotaReplays:
 
         if not matches:
             logger.info("All matches have cached details" if not self.force_refresh else "No matches found")
-            return
+            return 0
 
         logger.info(f"Fetching details for {len(matches)} matches...")
         # OpenDota recommends 21 days as the threshold for replay availability
         cutoff = datetime.now() - timedelta(days=21)
+        failed = 0
 
         for match in _progress(matches, "Fetching details"):
             match_id = match["match_id"]
@@ -171,6 +201,8 @@ class DotaReplays:
             # 1. Fetch match details
             details = self.client.get_match_details(match_id)
             if not details:
+                failed += 1
+                logger.error(f"Failed to fetch details for match {match_id}")
                 continue
 
             # 2. Check if parsed (version field)
@@ -188,6 +220,8 @@ class DotaReplays:
 
             # 4. Save to database
             self.db.upsert_match_details(match_id, details)
+
+        return failed
 
     def recheck_unparsed_matches(self, limit: int | None = None) -> None:
         """Re-check matches that are in the database but not fully parsed."""
@@ -643,6 +677,8 @@ def main() -> None:
     )
     app.force_retry = args.force_retry
 
+    updates: list[PlayerUpdate] = []
+
     try:
         if args.status:
             # Status mode - show database stats
@@ -661,10 +697,7 @@ def main() -> None:
             app.verify_downloads(redownload=args.redownload)
         elif args.player_id:
             # Update specific player
-            if not client.validate_player(args.player_id):
-                logger.error(f"Player {args.player_id} not found")
-                sys.exit(1)
-            app.update_player(args.player_id, limit=args.limit)
+            updates.append(app.update_player(args.player_id, limit=args.limit))
         else:
             # Update all tracked players
             players = db.get_all_players()
@@ -675,10 +708,22 @@ def main() -> None:
 
             logger.info(f"Updating {len(players)} tracked players...")
             for player in players:
-                app.update_player(player["player_id"], limit=args.limit)
+                updates.append(app.update_player(player["player_id"], limit=args.limit))
 
     finally:
         db.close()
+
+    failed_players = sum(1 for update in updates if not update.succeeded)
+    failed_details = sum(update.failed_details for update in updates)
+    if failed_players or failed_details:
+        players_text = _plural(
+            "failed player update", "failed player updates", failed_players
+        )
+        details_text = _plural(
+            "failed match detail fetch", "failed match detail fetches", failed_details
+        )
+        logger.error(f"Finished with {players_text} and {details_text}")
+        sys.exit(1)
 
     logger.info("Done!")
 
