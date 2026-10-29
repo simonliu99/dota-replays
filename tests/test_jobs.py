@@ -252,7 +252,6 @@ class JobEntryTestCase(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertIn("one or more steps failed", result.stdout)
         steps = log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(steps), 3, steps)
         self.assertRegex(
@@ -270,6 +269,7 @@ class JobEntryTestCase(unittest.TestCase):
                 f"{UPDATE_ENTRY}: database-copy exited 0",
             ],
         )
+        self.assertIn("one or more steps failed", result.stdout)
 
     def stub_step_runner(self, log, fail_step):
         """Replace python3 with a stub that records each step and fails one."""
