@@ -1,0 +1,29 @@
+# The dota-replays jobs on the Maryland worker. Add these entries to the
+# worker's policy on the hub's Worker page and edit the `supply` values to the
+# node's own paths; `since` is the oldest commit the worker may run.
+#
+# The worker needs max_backstop_s of at least 10800 and bulk-dota-replays=1.
+# DOTA_REPLAY_DIR and DOTA_DB_COPY_DIR are folders inside the TrueNAS mount
+# (here /mnt/truenas), never the mount point itself, so an unmounted share
+# fails the job instead of filling the local disk.
+
+[[repo]]
+name = "simonliu99/dota-replays"
+url = "https://github.com/simonliu99/dota-replays.git"
+since = "6c0bc9f825271240346fbba633dc00f3bc9d8520"
+
+[[task]]
+repo = "simonliu99/dota-replays"
+name = "update"
+entry = "jobs/update"
+args = []
+secrets = ["SWITCHBOARD_MODULE_TOKEN"]
+supply = { SWITCHBOARD_BULK = "/srv/dota-replays", DOTA_REPLAY_DIR = "/mnt/truenas/dota-replays/replays", DOTA_DB_COPY_DIR = "/mnt/truenas/dota-replays/db", SWITCHBOARD_HUB = "https://switchboard.example.com" }
+
+[[task]]
+repo = "simonliu99/dota-replays"
+name = "verify"
+entry = "jobs/verify"
+args = []
+secrets = ["SWITCHBOARD_MODULE_TOKEN"]
+supply = { SWITCHBOARD_BULK = "/srv/dota-replays", DOTA_REPLAY_DIR = "/mnt/truenas/dota-replays/replays", DOTA_DB_COPY_DIR = "/mnt/truenas/dota-replays/db", SWITCHBOARD_HUB = "https://switchboard.example.com" }

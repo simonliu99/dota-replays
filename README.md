@@ -78,6 +78,7 @@ python dota_replays.py --wait-for-parse
 | `--scan`           | False                             | Scan replay directory and register existing files in database |
 | `--verify`         | False                             | Verify all tracked files exist on disk                        |
 | `--redownload`     | False                             | Re-download missing files (requires `--verify`)               |
+| `--parse-wait-budget SECONDS` | None                   | Cap the total parse wait of one run                           |
 | `--status`         | False                             | Show database statistics and status                           |
 | `--refresh`        | False                             | Re-fetch match details for matches missing replay URLs        |
 | `--force-retry`    | False                             | Retry failed downloads within 21-day threshold                |
@@ -104,6 +105,86 @@ without it, set the same variables in the environment or pass the CLI flags.
 | `DB_PATH`          | `./dota_replays.db` | SQLite database path           |
 
 > **Note**: SQLite doesn't work well on NFS due to file locking. Keep `DB_PATH` on local storage and only use NFS for `REPLAY_DIR`.
+
+The `OPENDOTA_BASE_URL` environment variable overrides the API root; the tests
+point it at a local fake, and a normal run leaves it unset.
+
+## Run under switchboard
+
+A switchboard worker on the Maryland node runs these jobs from `jobs/`:
+`update` on a weekly trigger, and `verify` when the replays on disk need
+checking. The worker supplies the dataset's paths, and the entries never
+create one, so a missing mount fails the job instead of writing to the local
+disk.
+
+| Job | Entry | What it does | Backstop | Quiet limit |
+| --- | --- | --- | --- | --- |
+| `update` | `jobs/update` | Updates every tracked player's 100 newest matches, rechecks 30 unparsed matches, then writes a checked copy of the database | 10,800 s | 600 s |
+| `verify` | `jobs/verify` | Prints `--status`, then checks every recorded replay on disk | 1,800 s | 600 s |
+
+Each entry reads `SWITCHBOARD_BULK` (the node's local folder holding
+`dota_replays.db`), `DOTA_REPLAY_DIR` (the TrueNAS replay folder) and, for
+`update`, `DOTA_DB_COPY_DIR` (a TrueNAS folder for the copy). It exits 1 when
+one is unset or not a directory, and when `python3` is below 3.10.
+
+`DOTA_REPLAY_DIR` and `DOTA_DB_COPY_DIR` must each name a folder inside the
+mounted share, never the mount point itself: an unmounted mount point is an
+empty local directory, which the entries would accept and write to.
+
+`db_copy.py` writes `dota_replays.db.copy` on the local disk with SQLite's
+backup API, checks it with `PRAGMA integrity_check`, copies its bytes to
+`$DOTA_DB_COPY_DIR/dota_replays.db.part` and renames that to
+`dota_replays.db`. No SQLite connection opens a file on the share, and a
+failed run leaves the previous copy in place.
+
+A gap longer than the 100 matches `update` lists, such as a skipped week, is
+fetched by hand on the node: `python3 dota_replays.py --db "$SWITCHBOARD_BULK/dota_replays.db" --replay-dir "$DOTA_REPLAY_DIR"`
+with no `-n`.
+
+`switchboard/policy.example.toml` holds the worker's policy entries; add them
+on the hub's Worker page, set `max_backstop_s` to at least 10,800 and the
+`bulk-dota-replays` resource to 1.
+
+### Moving the database to the node's local disk
+
+The jobs keep the database at `$SWITCHBOARD_BULK/dota_replays.db` on the
+Maryland node's local disk, because SQLite's locking is not safe on a network
+share, and TrueNAS keeps a checked copy instead.
+
+1. On the node, as the worker's user: `mkdir -p <local>/dota-replays`.
+2. Stop anything writing the current database on the share.
+3. Copy it while nothing writes: `sqlite3 <old>/dota_replays.db ".backup '<local>/dota-replays/dota_replays.db'"`, then check it with `sqlite3 '<local>/dota-replays/dota_replays.db' 'PRAGMA integrity_check;'` and expect `ok`.
+4. Run `jobs/update` once: it adds the matches played since the last run, downloads missing replays and writes the first copy. Then run `jobs/verify`.
+5. Keep the share's original until both jobs pass; the copy folder is a
+   separate path, so the original is never overwritten.
+
+### The weekly trigger
+
+`switchboard/dev.dota-replays.update.plist` is a LaunchAgent for the dev Mac
+that submits `update` every Thursday at 05:30 Pacific and never before 05:00.
+launchd runs a calendar time missed while the Mac slept at its next wake, and
+`--not-before` refuses a wake in the small hours, so that week's run waits for
+the following Thursday.
+
+1. Mint an `sba_` agent token for the Mac on the hub's Access page and save it to `~/.config/switchboard/dota-replays-submit.token`, mode `0600`.
+2. Edit `switchboard/dev.dota-replays.update.plist`: `--hub` names the hub, and
+   the token and script paths must match the Mac.
+3. Install it:
+
+   ```bash
+   cp switchboard/dev.dota-replays.update.plist ~/Library/LaunchAgents/
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.dota-replays.update.plist
+   ```
+
+Its output goes to `~/Library/Logs/dota-replays-update.log`. The same submit
+by hand:
+
+```bash
+scripts/switchboard-submit --hub https://<hub> --token-file ~/.config/switchboard/dota-replays-submit.token update
+```
+
+The helper keeps a bare clone in `~/.cache/dota-replays-submit/repo.git`,
+fetches `master` before every submit, and runs the commit `master` points at.
 
 ## Finding Your Player ID
 

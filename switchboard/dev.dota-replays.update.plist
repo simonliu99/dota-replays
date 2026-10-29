@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.dota-replays.update</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/simonliu/Code/dota-replays/scripts/switchboard-submit</string>
+		<string>--hub</string>
+		<string>https://switchboard.example.com</string>
+		<string>--token-file</string>
+		<string>/Users/simonliu/.config/switchboard/dota-replays-submit.token</string>
+		<string>--not-before</string>
+		<string>05:00</string>
+		<string>update</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/simonliu</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<!-- Weekly, Thursday 05:30 Pacific; an earlier wake submits nothing. -->
+	<key>StartCalendarInterval</key>
+	<array>
+		<dict>
+			<key>Weekday</key>
+			<integer>4</integer>
+			<key>Hour</key>
+			<integer>5</integer>
+			<key>Minute</key>
+			<integer>30</integer>
+		</dict>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardOutPath</key>
+	<string>/Users/simonliu/Library/Logs/dota-replays-update.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/simonliu/Library/Logs/dota-replays-update.log</string>
+</dict>
+</plist>
