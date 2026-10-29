@@ -16,13 +16,16 @@ import dota_replays
 from database import Database
 from dota_replays import DotaReplays
 from opendota_client import OpenDotaClient
+from tests.fake_hub import FakeHub
 from tests.support import FIXTURE_PATH, RecordedOpenDota, ReplayServer, load_fixture
 
 ROOT = Path(__file__).resolve().parent.parent
 UPDATE_ENTRY = ROOT / "jobs" / "update"
 VERIFY_ENTRY = ROOT / "jobs" / "verify"
+CHECK_ENTRY = ROOT / "jobs" / "check"
 SUBMIT_HELPER = ROOT / "scripts" / "switchboard-submit"
 PLIST = ROOT / "switchboard" / "dev.dota-replays.update.plist"
+HUB_TOKEN = "sbm_test_token"
 
 PLAYER_ID = 86745912
 MATCH_ID = 8554321
@@ -60,6 +63,10 @@ class JobEntryTestCase(unittest.TestCase):
         self.run_dir = self.root / "run"
         self.run_dir.mkdir()
         os.symlink(sys.executable, self.bin / "python3")
+        self.hub = FakeHub(token=HUB_TOKEN)
+        self.addCleanup(self.hub.close)
+        self.opendota = RecordedOpenDota(FIXTURE_PATH)
+        self.addCleanup(self.opendota.close)
 
     def env(self, **overrides):
         """Return an entry environment that uses this test's python3."""
@@ -70,6 +77,9 @@ class JobEntryTestCase(unittest.TestCase):
             "SWITCHBOARD_BULK": str(self.bulk),
             "DOTA_REPLAY_DIR": str(self.replays),
             "DOTA_DB_COPY_DIR": str(self.copy_dir),
+            "SWITCHBOARD_HUB": self.hub.base_url,
+            "SWITCHBOARD_MODULE_TOKEN": HUB_TOKEN,
+            "OPENDOTA_BASE_URL": f"{self.opendota.base_url}/api",
         }
         env.update(overrides)
         return env
@@ -113,6 +123,42 @@ class JobEntryTestCase(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assert_empty(directories)
 
+    def test_check_entry_compares_the_index_with_the_database(self):
+        fixture = load_fixture()
+        player_id = fixture["player_id"]
+        match_id = fixture["match_ids"][0]
+        self.seed_player(player_id)
+        database = Database(str(self.bulk / "dota_replays.db"))
+        try:
+            database.insert_matches(
+                player_id,
+                [
+                    {
+                        "match_id": match_id,
+                        "start_time": int(datetime.now().timestamp()),
+                        "duration": 1200,
+                        "hero_id": 1,
+                        "kills": 0,
+                        "deaths": 0,
+                        "assists": 0,
+                        "radiant_win": True,
+                        "player_slot": 0,
+                    }
+                ],
+            )
+        finally:
+            database.close()
+
+        missing = self.run_entry(CHECK_ENTRY)
+        published = self.run_entry(UPDATE_ENTRY, merge=True)
+        present = self.run_entry(CHECK_ENTRY, merge=True)
+
+        self.assertEqual(published.returncode, 0, published.stdout)
+        self.assertEqual(missing.returncode, 1, missing.stderr)
+        self.assertIn("is missing from the store", missing.stderr)
+        self.assertEqual(present.returncode, 0, present.stdout)
+        self.assertIn("The index matches the database", present.stdout)
+
     def test_a_missing_directory_fails_and_is_not_created(self):
         cases = [
             (UPDATE_ENTRY, "SWITCHBOARD_BULK"),
@@ -120,6 +166,7 @@ class JobEntryTestCase(unittest.TestCase):
             (UPDATE_ENTRY, "DOTA_DB_COPY_DIR"),
             (VERIFY_ENTRY, "SWITCHBOARD_BULK"),
             (VERIFY_ENTRY, "DOTA_REPLAY_DIR"),
+            (CHECK_ENTRY, "SWITCHBOARD_BULK"),
         ]
         for entry, name in cases:
             with self.subTest(entry=entry.name, name=name):
@@ -253,13 +300,14 @@ class JobEntryTestCase(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1, result.stdout)
         steps = log.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(steps), 3, steps)
+        self.assertEqual(len(steps), 4, steps)
         self.assertRegex(
             steps[0], r"^dota_replays\.py --db \S+/dota_replays\.db .* -n 100 "
         )
         self.assertNotIn("--recheck-parsing", steps[0])
         self.assertIn("--recheck-parsing", steps[1])
         self.assertEqual(steps[2], "db_copy.py")
+        self.assertEqual(steps[3], "publish.py")
         exit_lines = [line for line in result.stdout.splitlines() if " exited " in line]
         self.assertEqual(
             exit_lines,
@@ -267,6 +315,33 @@ class JobEntryTestCase(unittest.TestCase):
                 f"{UPDATE_ENTRY}: update exited 1",
                 f"{UPDATE_ENTRY}: recheck-parsing exited 0",
                 f"{UPDATE_ENTRY}: database-copy exited 0",
+                f"{UPDATE_ENTRY}: publish exited 0",
+            ],
+        )
+        self.assertIn("one or more steps failed", result.stdout)
+
+    def test_a_failed_verify_step_does_not_skip_publish(self):
+        log = self.root / "steps.txt"
+        self.stub_step_runner(log, fail_step=2)
+
+        result = self.run_entry(
+            VERIFY_ENTRY, self.env(STUB_LOG=str(log)), merge=True
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        steps = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(steps), 3, steps)
+        self.assertIn("--status", steps[0])
+        self.assertIn("--verify", steps[1])
+        self.assertNotIn("--status", steps[1])
+        self.assertEqual(steps[2], "publish.py")
+        exit_lines = [line for line in result.stdout.splitlines() if " exited " in line]
+        self.assertEqual(
+            exit_lines,
+            [
+                f"{VERIFY_ENTRY}: status exited 0",
+                f"{VERIFY_ENTRY}: verify exited 1",
+                f"{VERIFY_ENTRY}: publish exited 0",
             ],
         )
         self.assertIn("one or more steps failed", result.stdout)
@@ -425,7 +500,11 @@ class SubmitHelperTestCase(unittest.TestCase):
         return argv[argv.index(flag) + 1]
 
     def test_the_argv_names_the_entry_resource_and_limits(self):
-        for task, backstop in (("update", "10800"), ("verify", "1800")):
+        for task, backstop, quiet in (
+            ("update", "10800", "600"),
+            ("verify", "1800", "600"),
+            ("check", "600", "300"),
+        ):
             with self.subTest(task=task):
                 self.stub_log.unlink(missing_ok=True)
                 result = self.run_helper(
@@ -460,7 +539,7 @@ class SubmitHelperTestCase(unittest.TestCase):
                 )
                 self.assertEqual(self.value_after(argv, "--demand-mem-mb"), "512")
                 self.assertEqual(self.value_after(argv, "--backstop"), backstop)
-                self.assertEqual(self.value_after(argv, "--quiet"), "600")
+                self.assertEqual(self.value_after(argv, "--quiet"), quiet)
                 self.assertRegex(self.head, r"^[0-9a-f]{40}$")
                 self.assertIn(str(self.token), argv)
                 self.assertNotIn("sba_test_token", "\n".join(argv))
@@ -653,7 +732,7 @@ class ParseWaitBudgetTestCase(unittest.TestCase):
 
 class TriggerTestCase(unittest.TestCase):
     def test_each_shell_script_parses_and_is_executable(self):
-        for script in (UPDATE_ENTRY, VERIFY_ENTRY, SUBMIT_HELPER):
+        for script in (UPDATE_ENTRY, VERIFY_ENTRY, CHECK_ENTRY, SUBMIT_HELPER):
             with self.subTest(script=script.name):
                 result = subprocess.run(
                     ["sh", "-n", str(script)],
