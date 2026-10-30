@@ -612,12 +612,6 @@ def parse_args() -> argparse.Namespace:
         help="Force re-fetch match details for the last N matches (use with -n)",
     )
     parser.add_argument(
-        "--api-key",
-        type=str,
-        default=os.environ.get("OPENDOTA_API_KEY"),
-        help="OpenDota API key for higher rate limits",
-    )
-    parser.add_argument(
         "--db",
         type=str,
         default=os.environ.get("DB_PATH", "./dota_replays.db"),
@@ -652,7 +646,6 @@ def main() -> None:
     # Initialize components
     db = Database(args.db)
     client = OpenDotaClient(
-        api_key=args.api_key,
         base_url=os.environ.get("OPENDOTA_BASE_URL"),
     )
     replay_dir = Path(args.replay_dir)

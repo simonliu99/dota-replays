@@ -82,7 +82,6 @@ python dota_replays.py --wait-for-parse
 | `--status`         | False                             | Show database statistics and status                           |
 | `--refresh`        | False                             | Re-fetch match details for matches missing replay URLs        |
 | `--force-retry`    | False                             | Retry failed downloads within 21-day threshold                |
-| `--api-key`        | `$OPENDOTA_API_KEY`               | OpenDota API key for higher rate limits                       |
 | `--db`             | `$DB_PATH` or `./dota_replays.db` | Path to SQLite database                                       |
 | `--replay-dir`     | `$REPLAY_DIR` or `./replays`      | Directory to store replay files                               |
 | `-v, --verbose`    | False                             | Enable debug logging                                          |
@@ -100,7 +99,6 @@ without it, set the same variables in the environment or pass the CLI flags.
 
 | Variable           | Default             | Description                    |
 | ------------------ | ------------------- | ------------------------------ |
-| `OPENDOTA_API_KEY` | -                   | API key for higher rate limits |
 | `REPLAY_DIR`       | `./replays`         | Replay storage (can be NFS)    |
 | `DB_PATH`          | `./dota_replays.db` | SQLite database path           |
 
@@ -208,15 +206,3 @@ fetches `master` before every submit, and runs the commit `master` points at.
 1. Log into [OpenDota](https://www.opendota.com/)
 2. Go to **My Profile**
 3. Your URL will be: `https://www.opendota.com/players/<player_id>`
-
-## API Key (Optional)
-
-Register for a free [OpenDota API key](https://www.opendota.com/api-keys) for higher rate limits:
-
-```bash
-# Via .env file (recommended)
-echo "OPENDOTA_API_KEY=your-key-here" >> .env
-
-# Or via command line
-python dota_replays.py --api-key your-key-here
-```
