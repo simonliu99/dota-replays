@@ -260,8 +260,3 @@ class OpenDotaClient:
 
         logger.warning(f"Parse job {job_id} timed out after {timeout}s")
         return False
-
-    def validate_player(self, player_id: int) -> bool:
-        """Check if a player ID is valid."""
-        player = self.get_player(player_id)
-        return player is not None and "profile" in player

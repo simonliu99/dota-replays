@@ -307,11 +307,6 @@ class Database:
         """, (on_disk, datetime.now().isoformat(), match_id))
         self.conn.commit()
 
-    def get_downloads_missing_from_disk(self) -> list[dict]:
-        """Get downloads marked as on_disk but may need verification."""
-        cursor = self.conn.execute("SELECT * FROM downloads WHERE on_disk = FALSE")
-        return [dict(row) for row in cursor.fetchall()]
-
     # ==================== Download Attempt Tracking ====================
 
     def record_download_attempt(self, match_id: int, error: str | None = None) -> None:
@@ -395,13 +390,6 @@ class Database:
         """, (datetime.now().isoformat(), match_id))
         self.conn.commit()
 
-    def get_pending_parse_jobs(self) -> list[dict]:
-        """Get parse jobs that haven't completed."""
-        cursor = self.conn.execute(
-            "SELECT * FROM parse_jobs WHERE completed_at IS NULL"
-        )
-        return [dict(row) for row in cursor.fetchall()]
-
     # ==================== Stats/Audit Operations ====================
 
     def get_stats(self) -> dict:
@@ -479,9 +467,4 @@ class Database:
             
         cursor = self.conn.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
-
-    def delete_match_details(self, match_id: int) -> None:
-        """Delete match details to allow re-fetching."""
-        self.conn.execute("DELETE FROM match_details WHERE match_id = ?", (match_id,))
-        self.conn.commit()
 
