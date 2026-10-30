@@ -35,9 +35,8 @@ class OpenDotaClient:
 
     BASE_URL = "https://api.opendota.com/api"
 
-    # Rate limit: 60 requests/min without key, 1200/min with key
-    DEFAULT_DELAY = 1.0  # seconds between requests (safe for no-key usage)
-    KEYED_DELAY = 0.5
+    # Rate limit: 60 requests a minute.
+    REQUEST_DELAY = 1.0  # seconds between requests
 
     # Every answer waits at most this long; a retried request is bounded by
     # 4 attempts x 30 s plus the 1, 2 and 4 s backoff.
@@ -46,8 +45,7 @@ class OpenDotaClient:
     RETRY_DELAYS = (1, 2, 4)
     RATE_LIMIT_WAIT = 60
 
-    def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        self.api_key = api_key
+    def __init__(self, base_url: str | None = None):
         self.base_url = (base_url or self.BASE_URL).rstrip("/")
         self.last_request_time = 0.0
         # Answers that carried nothing: a connection or read failure, or a 429
@@ -57,7 +55,7 @@ class OpenDotaClient:
     def _rate_limit(self) -> None:
         """Enforce rate limiting between requests."""
         elapsed = time.time() - self.last_request_time
-        delay = self.KEYED_DELAY if self.api_key else self.DEFAULT_DELAY
+        delay = self.REQUEST_DELAY
         if elapsed < delay:
             time.sleep(delay - elapsed)
         self.last_request_time = time.time()
@@ -73,8 +71,6 @@ class OpenDotaClient:
         mode.
         """
         query = dict(params or {})
-        if self.api_key:
-            query["api_key"] = self.api_key
 
         url = f"{self.base_url}{endpoint}"
         if query:
@@ -193,7 +189,7 @@ class OpenDotaClient:
         response = self._request("POST", f"/request/{match_id}")
 
         # Parse requests count as 10 calls - add extra delay
-        delay = 5.0 if self.api_key else 10.0  # 10 calls worth of delay
+        delay = 10.0  # 10 calls worth of delay
         time.sleep(delay)
 
         if response.status_code == 200:
