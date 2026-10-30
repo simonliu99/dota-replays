@@ -209,27 +209,6 @@ fetches `master` before every submit, and runs the commit `master` points at.
 2. Go to **My Profile**
 3. Your URL will be: `https://www.opendota.com/players/<player_id>`
 
-## Migration from v1
-
-If you have existing `.pkl` files from the old version:
-
-```bash
-# 1. Preview what will be migrated
-python migrate_pkl_to_sqlite.py --dry-run
-
-# 2. Run migration
-python migrate_pkl_to_sqlite.py
-
-# 3. Consolidate replay folders (moves replays-* into configured REPLAY_DIR)
-python migrate_pkl_to_sqlite.py --consolidate-replays
-
-# 4. Scan and register existing replay files
-python dota_replays.py --scan
-
-# 5. Verify all files (optional)
-python dota_replays.py --verify
-```
-
 ## API Key (Optional)
 
 Register for a free [OpenDota API key](https://www.opendota.com/api-keys) for higher rate limits:
