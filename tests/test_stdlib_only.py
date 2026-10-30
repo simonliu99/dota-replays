@@ -11,7 +11,6 @@ APP_MODULES = (
     "dota_replays",
     "db_copy",
     "publish",
-    "migrate_pkl_to_sqlite",
 )
 
 

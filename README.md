@@ -51,5 +51,3 @@ lists the variables; a `.env` file is read only when the optional
 - Run the tests with `python3 -m unittest discover -v` under Python 3.10 or
   later. They point `OPENDOTA_BASE_URL` at a local fake and never call
   OpenDota.
-- `migrate_pkl_to_sqlite.py` converts the `.pkl` files of version 1; run it
-  with `--dry-run` first.
