@@ -11,6 +11,7 @@ APP_MODULES = (
     "dota_replays",
     "db_copy",
     "publish",
+    "replay_folder",
 )
 
 

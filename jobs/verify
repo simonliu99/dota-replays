@@ -1,6 +1,6 @@
 #!/bin/sh
-# switchboard job entry: print the database status, verify the replays, then
-# publish the match index.
+# switchboard job entry: print the database status, verify the replays, check
+# the database backups and replay folder, then publish the match index.
 #
 # The worker supplies SWITCHBOARD_BULK (the local folder holding the database)
 # and DOTA_REPLAY_DIR (the TrueNAS replay folder). The entry never creates one,
@@ -58,6 +58,8 @@ run_step verify python3 dota_replays.py \
     --db "$SWITCHBOARD_BULK/dota_replays.db" \
     --replay-dir "$DOTA_REPLAY_DIR" \
     --verify
+run_step backup-check python3 db_copy.py --check
+run_step folder-check python3 replay_folder.py
 run_step publish python3 publish.py
 
 [ "$failed" -eq 0 ] || {
