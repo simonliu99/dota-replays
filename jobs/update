@@ -2,12 +2,11 @@
 # switchboard job entry: update every tracked player, copy the database, then
 # publish the match index.
 #
-# The worker supplies SWITCHBOARD_BULK (the local folder holding the
-# database), DOTA_REPLAY_DIR (the TrueNAS replay folder) and DOTA_DB_COPY_DIR
-# (the TrueNAS folder for the checked copy). The entry never creates one, so
-# a missing mount fails the job instead of writing to the local disk. The
-# publish step reads SWITCHBOARD_HUB and SWITCHBOARD_MODULE_TOKEN and exits 1
-# when either is unset.
+# The worker supplies SWITCHBOARD_BULK (the local folder holding the database)
+# and DOTA_REPLAY_DIR (the TrueNAS replay folder, which holds dated backups in
+# db-backups/). The entry never creates one, so a missing mount fails the job
+# instead of writing to the local disk. The publish step reads SWITCHBOARD_HUB
+# and SWITCHBOARD_MODULE_TOKEN and exits 1 when either is unset.
 
 set -eu
 
@@ -23,17 +22,17 @@ cd "$(dirname "$0")/.."
     printf '%s: DOTA_REPLAY_DIR is not a directory: %s\n' "$0" "$DOTA_REPLAY_DIR" >&2
     exit 1
 }
-: "${DOTA_DB_COPY_DIR:?DOTA_DB_COPY_DIR is not set}"
-[ -d "$DOTA_DB_COPY_DIR" ] || {
-    printf '%s: DOTA_DB_COPY_DIR is not a directory: %s\n' "$0" "$DOTA_DB_COPY_DIR" >&2
-    exit 1
-}
 
 python3 --version
 if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
     printf '%s: python3 is below 3.10\n' "$0" >&2
     exit 1
 fi
+
+[ -f "$SWITCHBOARD_BULK/dota_replays.db" ] || {
+    printf '%s: no database at %s/dota_replays.db\n' "$0" "$SWITCHBOARD_BULK" >&2
+    exit 1
+}
 
 failed=0
 
