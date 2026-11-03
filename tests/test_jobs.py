@@ -2,12 +2,15 @@
 
 import os
 import plistlib
+import re
+import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -56,10 +59,10 @@ class JobEntryTestCase(unittest.TestCase):
         self.bin.mkdir()
         self.bulk = self.root / "bulk"
         self.bulk.mkdir()
-        self.replays = self.root / "replays"
-        self.replays.mkdir()
-        self.copy_dir = self.root / "copy"
-        self.copy_dir.mkdir()
+        self.replays = self.root / "0. Personal" / "Games" / "dota-replays"
+        self.replays.mkdir(parents=True)
+        self.legacy_copy = self.root / "legacy-copy"
+        self.legacy_copy.mkdir()
         self.run_dir = self.root / "run"
         self.run_dir.mkdir()
         os.symlink(sys.executable, self.bin / "python3")
@@ -76,7 +79,7 @@ class JobEntryTestCase(unittest.TestCase):
             "PYTHONUNBUFFERED": "1",
             "SWITCHBOARD_BULK": str(self.bulk),
             "DOTA_REPLAY_DIR": str(self.replays),
-            "DOTA_DB_COPY_DIR": str(self.copy_dir),
+            "DOTA_DB_COPY_DIR": str(self.legacy_copy),
             "SWITCHBOARD_HUB": self.hub.base_url,
             "SWITCHBOARD_MODULE_TOKEN": HUB_TOKEN,
             "OPENDOTA_BASE_URL": f"{self.opendota.base_url}/api",
@@ -94,28 +97,27 @@ class JobEntryTestCase(unittest.TestCase):
         case_root = self.root / label
         case_root.mkdir()
         directories = {}
-        for name in ("bulk", "replays", "copy", "run"):
+        for name in ("bulk", "replays", "run"):
             directories[name] = case_root / name
             directories[name].mkdir()
         env = self.env(
             SWITCHBOARD_BULK=str(directories["bulk"]),
             DOTA_REPLAY_DIR=str(directories["replays"]),
-            DOTA_DB_COPY_DIR=str(directories["copy"]),
         )
         return env, directories
 
     def assert_empty(self, directories):
-        for name in ("bulk", "replays", "copy", "run"):
+        for name in ("bulk", "replays", "run"):
             self.assertEqual(os.listdir(directories[name]), [], name)
 
     def assert_nothing_created(self):
         self.assertEqual(os.listdir(self.run_dir), [])
         self.assertEqual(os.listdir(self.bulk), [])
         self.assertEqual(os.listdir(self.replays), [])
-        self.assertEqual(os.listdir(self.copy_dir), [])
+        self.assertEqual(os.listdir(self.legacy_copy), [])
 
     def test_a_missing_variable_fails_and_creates_nothing(self):
-        for name in ("SWITCHBOARD_BULK", "DOTA_REPLAY_DIR", "DOTA_DB_COPY_DIR"):
+        for name in ("SWITCHBOARD_BULK", "DOTA_REPLAY_DIR"):
             with self.subTest(name=name):
                 env, directories = self.case_env(f"missing-variable-{name}")
                 del env[name]
@@ -163,7 +165,6 @@ class JobEntryTestCase(unittest.TestCase):
         cases = [
             (UPDATE_ENTRY, "SWITCHBOARD_BULK"),
             (UPDATE_ENTRY, "DOTA_REPLAY_DIR"),
-            (UPDATE_ENTRY, "DOTA_DB_COPY_DIR"),
             (VERIFY_ENTRY, "SWITCHBOARD_BULK"),
             (VERIFY_ENTRY, "DOTA_REPLAY_DIR"),
             (CHECK_ENTRY, "SWITCHBOARD_BULK"),
@@ -200,7 +201,7 @@ class JobEntryTestCase(unittest.TestCase):
         self.assertIn("below 3.10", result.stderr)
         self.assert_nothing_created()
 
-    def test_update_entry_fetches_matches_and_copies_the_database(self):
+    def test_update_entry_backs_up_the_database_into_the_replay_folder(self):
         fixture = load_fixture()
         player_id = fixture["player_id"]
         match_id = fixture["match_ids"][0]
@@ -213,45 +214,63 @@ class JobEntryTestCase(unittest.TestCase):
         )
         self.seed_player(player_id)
 
-        result = self.run_entry(
-            UPDATE_ENTRY, self.env(OPENDOTA_BASE_URL=f"{opendota.base_url}/api")
-        )
+        backup_dir = self.replays / "db-backups"
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(opendota.requests[0], ("GET", f"/api/players/{player_id}"))
-        self.assertIn(("GET", f"/api/matches/{match_id}"), opendota.requests)
-        self.assertEqual(os.listdir(self.run_dir), [])
+        # Subcase A: sets DOTA_DB_COPY_DIR to legacy-copy
+        before_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        result_a = self.run_entry(
+            UPDATE_ENTRY,
+            self.env(
+                OPENDOTA_BASE_URL=f"{opendota.base_url}/api",
+                DOTA_DB_COPY_DIR=str(self.legacy_copy),
+            ),
+        )
+        after_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+        self.assertEqual(result_a.returncode, 0, result_a.stderr)
+        candidates = [
+            f
+            for f in os.listdir(backup_dir)
+            if re.fullmatch(r"dota_replays-[0-9]{8}T[0-9]{6}Z\.db", f)
+        ] if backup_dir.exists() else []
+        self.assertEqual(len(candidates), 1, f"db-backups holds candidates: {candidates}")
+        backup_name = candidates[0]
+        stamp = re.fullmatch(r"dota_replays-([0-9]{8}T[0-9]{6}Z)\.db", backup_name).group(1)
+        self.assertTrue(before_stamp <= stamp <= after_stamp, f"{stamp} not in [{before_stamp}, {after_stamp}]")
+
+        backup_file = backup_dir / backup_name
+        conn = sqlite3.connect(backup_file.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            self.assertEqual(conn.execute("PRAGMA integrity_check").fetchall(), [("ok",)])
+            copied = conn.execute("SELECT player_id, persona_name FROM players ORDER BY player_id").fetchall()
+        finally:
+            conn.close()
 
         database = Database(str(self.bulk / "dota_replays.db"))
-        self.addCleanup(database.close)
-        self.assertEqual(
-            [player["player_id"] for player in database.get_all_players()],
-            [player_id],
-        )
-        self.assertEqual(database.get_match_ids_for_player(player_id), {match_id})
-
-        copy_path = self.copy_dir / "dota_replays.db"
-        self.assertTrue(copy_path.is_file())
-        copy_connection = sqlite3.connect(
-            copy_path.resolve().as_uri() + "?mode=ro", uri=True
-        )
         try:
-            self.assertEqual(
-                copy_connection.execute("PRAGMA integrity_check").fetchall(),
-                [("ok",)],
-            )
-            copied = copy_connection.execute(
-                "SELECT player_id, persona_name FROM players ORDER BY player_id"
-            ).fetchall()
+            original = database.conn.execute("SELECT player_id, persona_name FROM players ORDER BY player_id").fetchall()
         finally:
-            copy_connection.close()
-        original = database.conn.execute(
-            "SELECT player_id, persona_name FROM players ORDER BY player_id"
-        ).fetchall()
+            database.close()
         self.assertEqual(copied, [tuple(row) for row in original])
-        self.assertFalse((self.copy_dir / "dota_replays.db.part").exists())
+
+        self.assertFalse((backup_dir / f"{backup_name}.part").exists())
         self.assertFalse((self.bulk / "dota_replays.db.copy").exists())
-        self.assertIn("Copied", result.stderr)
+        self.assertEqual(os.listdir(self.legacy_copy), [])
+
+        # Subcase B: unsets DOTA_DB_COPY_DIR: exits 0
+        env_b = self.env(OPENDOTA_BASE_URL=f"{opendota.base_url}/api")
+        env_b.pop("DOTA_DB_COPY_DIR", None)
+        result_b = self.run_entry(UPDATE_ENTRY, env_b)
+        self.assertEqual(result_b.returncode, 0, result_b.stderr)
+
+    def test_an_entry_without_a_database_fails_and_creates_nothing(self):
+        for entry in (UPDATE_ENTRY, VERIFY_ENTRY, CHECK_ENTRY):
+            with self.subTest(entry=entry.name):
+                env, directories = self.case_env(f"missing-db-{entry.name}")
+                result = self.run_entry(entry, env, cwd=directories["run"])
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("no database at", result.stderr)
+                self.assert_empty(directories)
 
     def test_verify_entry_prints_status_before_verifying(self):
         database = Database(str(self.bulk / "dota_replays.db"))
@@ -292,6 +311,7 @@ class JobEntryTestCase(unittest.TestCase):
         self.assertIsNotNone(self.hub.document("meta", "summary"))
 
     def test_a_failed_update_step_does_not_skip_the_later_steps(self):
+        self.seed_player(1)
         log = self.root / "steps.txt"
         self.stub_step_runner(log, fail_step=1)
 
@@ -322,6 +342,7 @@ class JobEntryTestCase(unittest.TestCase):
         self.assertIn("one or more steps failed", result.stdout)
 
     def test_a_failed_verify_step_does_not_skip_publish(self):
+        self.seed_player(1)
         log = self.root / "steps.txt"
         self.stub_step_runner(log, fail_step=2)
 
@@ -604,72 +625,314 @@ class DatabaseCopyTestCase(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.bulk = self.root / "bulk"
         self.bulk.mkdir()
-        self.copy_dir = self.root / "copy"
-        self.copy_dir.mkdir()
+        self.replays = self.root / "replays"
+        self.replays.mkdir()
+        self.backup_dir = self.replays / "db-backups"
+        self.legacy_copy = self.root / "legacy-copy"
+        self.legacy_copy.mkdir()
         self.database = Database(str(self.bulk / "dota_replays.db"))
         self.addCleanup(self.database.close)
         self.database.upsert_player(1, "First Player")
         self.database.upsert_player(2, "Second Player")
+        self.insert_matches(2)
         environment = mock.patch.dict(
             os.environ,
             {
                 "SWITCHBOARD_BULK": str(self.bulk),
-                "DOTA_DB_COPY_DIR": str(self.copy_dir),
+                "DOTA_REPLAY_DIR": str(self.replays),
+                "DOTA_DB_COPY_DIR": str(self.legacy_copy),
             },
         )
         environment.start()
         self.addCleanup(environment.stop)
 
-    def test_the_copy_is_checked_and_holds_the_same_players(self):
-        with self.assertLogs("db_copy", level="INFO") as captured:
-            self.assertEqual(db_copy.main(), 0)
+    def insert_matches(self, count):
+        if count > 0:
+            match_data = [
+                {
+                    "match_id": 1000 + m,
+                    "start_time": 1600000000 + m,
+                    "duration": 1800,
+                    "hero_id": 1,
+                    "kills": 1,
+                    "deaths": 1,
+                    "assists": 1,
+                    "radiant_win": True,
+                    "player_slot": 0,
+                }
+                for m in range(1, count + 1)
+            ]
+            self.database.insert_matches(1, match_data)
 
-        target = self.copy_dir / "dota_replays.db"
-        self.assertTrue(target.is_file())
-        connection = sqlite3.connect(target.resolve().as_uri() + "?mode=ro", uri=True)
+    def seed_backup(self, stamp, players=2, matches=2):
+        temp_dir = self.root / f"seed-{stamp}"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_db_path = temp_dir / "temp.db"
+        db = Database(str(temp_db_path))
         try:
-            self.assertEqual(
-                connection.execute("PRAGMA integrity_check").fetchall(), [("ok",)]
-            )
-            copied = connection.execute(
-                "SELECT player_id, persona_name FROM players ORDER BY player_id"
-            ).fetchall()
+            for p in range(1, players + 1):
+                db.upsert_player(p, f"Player {p}")
+            if matches > 0:
+                match_data = [
+                    {
+                        "match_id": 2000 + m,
+                        "start_time": 1600000000 + m,
+                        "duration": 1800,
+                        "hero_id": 1,
+                        "kills": 1,
+                        "deaths": 1,
+                        "assists": 1,
+                        "radiant_win": True,
+                        "player_slot": 0,
+                    }
+                    for m in range(1, matches + 1)
+                ]
+                db.insert_matches(1, match_data)
         finally:
-            connection.close()
-        original = self.database.conn.execute(
-            "SELECT player_id, persona_name FROM players ORDER BY player_id"
-        ).fetchall()
-        self.assertEqual(copied, [tuple(row) for row in original])
-        self.assertFalse((self.bulk / "dota_replays.db.copy").exists())
-        self.assertFalse((self.copy_dir / "dota_replays.db.part").exists())
-        self.assertTrue(any("Copied" in line for line in captured.output))
+            db.close()
 
-    def test_an_unwritable_copy_folder_leaves_the_earlier_copy(self):
-        if os.geteuid() == 0:
-            self.skipTest("root writes into a directory with no write permission")
-        with self.assertLogs("db_copy", level="INFO"):
-            self.assertEqual(db_copy.main(), 0)
-        target = self.copy_dir / "dota_replays.db"
-        earlier = target.read_bytes()
-        self.database.upsert_player(3, "Third Player")
-        self.copy_dir.chmod(0o555)
-        self.addCleanup(self.copy_dir.chmod, 0o755)
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        target = self.backup_dir / f"dota_replays-{stamp}.db"
+        src_uri = temp_db_path.resolve().as_uri() + "?mode=ro"
+        src_conn = sqlite3.connect(src_uri, uri=True)
+        try:
+            dst_conn = sqlite3.connect(target)
+            try:
+                src_conn.backup(dst_conn)
+                dst_conn.execute("PRAGMA journal_mode=DELETE")
+            finally:
+                dst_conn.close()
+        finally:
+            src_conn.close()
+        return target
 
-        with self.assertLogs("db_copy", level="ERROR"):
+    def test_backups_beyond_fourteen_are_pruned_oldest_first(self):
+        for day in range(1, 15):
+            self.seed_backup(f"200101{day:02d}T000000Z")
+        (self.backup_dir / "100").write_bytes(b"100")
+        (self.backup_dir / "notes.txt").write_bytes(b"notes")
+        (self.backup_dir / "dota_replays-20010101T000000Z.db.bak").write_bytes(b"bak")
+        (self.backup_dir / "dota_replays-99999999T999999Z.db").write_bytes(b"invalid date")
+        (self.backup_dir / "dota_replays-٢٠٠١٠١٠١T000000Z.db").write_bytes(b"arabic")
+        (self.backup_dir / "dota_replays-20000101T000000Z.db").mkdir()
+        outside = self.root / "outside.txt"
+        outside.write_bytes(b"target")
+        link = self.backup_dir / "dota_replays-20000102T000000Z.db"
+        os.symlink(str(outside), str(link))
+
+        self.assertEqual(db_copy.main(), 0)
+
+        candidates = [
+            f
+            for f in os.listdir(self.backup_dir)
+            if re.fullmatch(r"dota_replays-([0-9]{8}T[0-9]{6}Z)\.db", f)
+            and os.path.isfile(self.backup_dir / f)
+            and not os.path.islink(self.backup_dir / f)
+        ]
+        valid_candidates = []
+        for c in candidates:
+            m = re.fullmatch(r"dota_replays-([0-9]{8}T[0-9]{6}Z)\.db", c)
+            try:
+                time.strptime(m.group(1), "%Y%m%dT%H%M%SZ")
+                valid_candidates.append(c)
+            except ValueError:
+                pass
+        now_stamp = time.strftime("%Y%m%dT", time.gmtime())
+        new_candidates = [
+            c for c in valid_candidates if c.startswith(f"dota_replays-{now_stamp}")
+        ]
+        self.assertEqual(len(new_candidates), 1)
+        self.assertEqual(len(valid_candidates), 14)
+        self.assertFalse((self.backup_dir / "dota_replays-20010101T000000Z.db").exists())
+        self.assertTrue((self.backup_dir / "dota_replays-20010102T000000Z.db").is_file())
+        self.assertEqual((self.backup_dir / "100").read_bytes(), b"100")
+        self.assertEqual((self.backup_dir / "notes.txt").read_bytes(), b"notes")
+        self.assertEqual((self.backup_dir / "dota_replays-20010101T000000Z.db.bak").read_bytes(), b"bak")
+        self.assertEqual((self.backup_dir / "dota_replays-99999999T999999Z.db").read_bytes(), b"invalid date")
+        self.assertEqual((self.backup_dir / "dota_replays-٢٠٠١٠١٠١T000000Z.db").read_bytes(), b"arabic")
+        self.assertTrue((self.backup_dir / "dota_replays-20000101T000000Z.db").is_dir())
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(os.readlink(link), str(outside))
+        self.assertEqual(outside.read_bytes(), b"target")
+
+    def test_a_backup_dated_after_the_clock_stops_pruning(self):
+        for day in range(1, 15):
+            self.seed_backup(f"200101{day:02d}T000000Z")
+        future = self.seed_backup("20990101T000000Z")
+        self.assertEqual(db_copy.main(), 1)
+        for day in range(1, 15):
+            self.assertTrue((self.backup_dir / f"dota_replays-200101{day:02d}T000000Z.db").is_file())
+        self.assertTrue(future.is_file())
+        now_stamp = time.strftime("%Y%m%dT", time.gmtime())
+        new_backups = [f for f in os.listdir(self.backup_dir) if f.startswith(f"dota_replays-{now_stamp}")]
+        self.assertEqual(len(new_backups), 1)
+
+    def test_a_short_copy_leaves_no_backup(self):
+        earlier = self.seed_backup("20010101T000000Z")
+        earlier_bytes = earlier.read_bytes()
+        real_copyfile = shutil.copyfile
+
+        def fake_copyfile(src, dst, *args, **kwargs):
+            if "db-backups" in str(dst):
+                with open(src, "rb") as s, open(dst, "wb") as d:
+                    content = s.read()
+                    d.write(content[: len(content) // 2])
+                return dst
+            return real_copyfile(src, dst, *args, **kwargs)
+
+        with mock.patch("db_copy.shutil.copyfile", side_effect=fake_copyfile):
             self.assertEqual(db_copy.main(), 1)
 
-        self.assertEqual(target.read_bytes(), earlier)
-        connection = sqlite3.connect(target.resolve().as_uri() + "?mode=ro", uri=True)
+        self.assertEqual(earlier.read_bytes(), earlier_bytes)
+        names = os.listdir(self.backup_dir)
+        self.assertEqual(names, ["dota_replays-20010101T000000Z.db"])
+        self.assertFalse(any(n.endswith(".part") for n in names))
+
+    def test_a_symlinked_backup_folder_is_refused(self):
+        outside = self.root / "outside_backups"
+        outside.mkdir()
+        os.symlink(str(outside), str(self.backup_dir))
+        self.assertEqual(db_copy.main(), 1)
+        self.assertEqual(os.listdir(outside), [])
+
+    def test_a_stale_part_is_removed(self):
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        part = self.backup_dir / "dota_replays-20010101T000000Z.db.part"
+        part.write_bytes(b"stale part")
+        arabic_part = self.backup_dir / "dota_replays-٢٠٠١٠١٠١T000000Z.db.part"
+        arabic_part.write_bytes(b"arabic part")
+        self.assertEqual(db_copy.main(), 0)
+        self.assertFalse(part.exists())
+        self.assertTrue(arabic_part.is_file())
+        self.assertEqual(arabic_part.read_bytes(), b"arabic part")
+
+    def test_an_unwritable_backup_folder_keeps_the_earlier_backups(self):
+        if os.geteuid() == 0:
+            self.skipTest("root writes into a directory with no write permission")
+        self.assertEqual(db_copy.main(), 0)
+        backups = (
+            [f for f in os.listdir(self.backup_dir) if f.endswith(".db")]
+            if self.backup_dir.exists()
+            else []
+        )
+        self.assertEqual(len(backups), 1)
+        first_backup = self.backup_dir / backups[0]
+        first_bytes = first_backup.read_bytes()
+
+        self.backup_dir.chmod(0o555)
+        self.addCleanup(self.backup_dir.chmod, 0o755)
+
+        later = time.gmtime(time.time() + 60)
+        with mock.patch("time.gmtime", return_value=later):
+            with self.assertLogs("db_copy", level="ERROR") as captured:
+                self.assertEqual(db_copy.main(), 1)
+        self.assertIn("Permission denied", "\n".join(captured.output))
+        self.assertEqual(first_backup.read_bytes(), first_bytes)
+        self.assertEqual(os.listdir(self.backup_dir), [backups[0]])
+
+    def test_a_missing_replay_folder_creates_nothing(self):
+        missing = self.root / "missing_replays"
+        with mock.patch.dict(os.environ, {"DOTA_REPLAY_DIR": str(missing)}):
+            parent_listing = os.listdir(self.root)
+            with self.assertRaises(SystemExit):
+                db_copy.main()
+            self.assertFalse(missing.exists())
+            self.assertEqual(os.listdir(self.root), parent_listing)
+
+    def test_a_smaller_database_writes_and_prunes_nothing(self):
+        seeded_bytes = {}
+        for day in range(1, 15):
+            name = f"200101{day:02d}T000000Z"
+            path = self.seed_backup(name, players=2, matches=2)
+            seeded_bytes[path.name] = path.read_bytes()
+
+        live_db_path = self.bulk / "dota_replays.db"
+        self.database.close()
+        live_db_path.unlink()
+        self.database = Database(str(live_db_path))
+        self.database.upsert_player(1, "Only Player")
+        self.insert_matches(1)
+
+        with self.assertLogs("db_copy", level="ERROR") as captured:
+            self.assertEqual(db_copy.main(), 1)
+
+        for name, data in seeded_bytes.items():
+            self.assertEqual((self.backup_dir / name).read_bytes(), data)
+        self.assertEqual(set(os.listdir(self.backup_dir)), set(seeded_bytes.keys()))
+        self.assertFalse(any(n.endswith(".part") for n in os.listdir(self.backup_dir)))
+        output_str = "\n".join(captured.output)
+        self.assertIn("1 matches", output_str)
+        self.assertIn("2 matches", output_str)
+
+    def test_a_refused_shrink_still_refuses_on_the_next_run(self):
+        seeded_bytes = {}
+        for day in range(1, 15):
+            name = f"200101{day:02d}T000000Z"
+            path = self.seed_backup(name, players=2, matches=2)
+            seeded_bytes[path.name] = path.read_bytes()
+
+        live_db_path = self.bulk / "dota_replays.db"
+        self.database.close()
+        live_db_path.unlink()
+        self.database = Database(str(live_db_path))
+        self.database.upsert_player(1, "Only Player")
+        self.insert_matches(1)
+
+        self.assertEqual(db_copy.main(), 1)
+        self.assertEqual(db_copy.main(), 1)
+
+        for name, data in seeded_bytes.items():
+            self.assertEqual((self.backup_dir / name).read_bytes(), data)
+        self.assertEqual(set(os.listdir(self.backup_dir)), set(seeded_bytes.keys()))
+
+    def test_an_existing_backup_name_is_never_overwritten(self):
+        target = self.seed_backup("20261105T133012Z")
+        kept = target.read_bytes()
+        with mock.patch("time.gmtime", return_value=time.struct_time((2026, 11, 5, 13, 30, 12, 3, 309, 0))):
+            self.assertEqual(db_copy.main(), 1)
+        self.assertEqual(target.read_bytes(), kept)
+        self.assertFalse(any(n.endswith(".part") for n in os.listdir(self.backup_dir)))
+
+    def test_backups_moved_into_held_let_a_smaller_database_back_up(self):
+        seeded_bytes = {}
+        for day in range(1, 15):
+            name = f"200101{day:02d}T000000Z"
+            path = self.seed_backup(name, players=2, matches=2)
+            seeded_bytes[path.name] = path.read_bytes()
+
+        live_db_path = self.bulk / "dota_replays.db"
+        self.database.close()
+        live_db_path.unlink()
+        self.database = Database(str(live_db_path))
+        self.database.upsert_player(1, "Only Player")
+        self.insert_matches(1)
+
+        self.assertEqual(db_copy.main(), 1)
+
+        held_dir = self.backup_dir / "held"
+        held_dir.mkdir()
+        for name in seeded_bytes:
+            os.replace(self.backup_dir / name, held_dir / name)
+
+        self.assertEqual(db_copy.main(), 0)
+
+        candidates = [
+            f
+            for f in os.listdir(self.backup_dir)
+            if re.fullmatch(r"dota_replays-[0-9]{8}T[0-9]{6}Z\.db", f)
+            and (self.backup_dir / f).is_file()
+        ]
+        self.assertEqual(len(candidates), 1)
+        conn = sqlite3.connect((self.backup_dir / candidates[0]).resolve().as_uri() + "?mode=ro", uri=True)
         try:
-            names = [
-                row[0]
-                for row in connection.execute(
-                    "SELECT persona_name FROM players ORDER BY player_id"
-                )
-            ]
+            players = conn.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+            matches = conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
+            self.assertEqual((players, matches), (1, 1))
         finally:
-            connection.close()
-        self.assertEqual(names, ["First Player", "Second Player"])
+            conn.close()
+
+        for name, data in seeded_bytes.items():
+            self.assertEqual((held_dir / name).read_bytes(), data)
 
 
 class ParseWaitBudgetTestCase(unittest.TestCase):

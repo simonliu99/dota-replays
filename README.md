@@ -47,7 +47,7 @@ lists the variables; a `.env` file is read only when the optional
   Only the replay folder may be on a network share.
 - `dota_replays.py` is the command line, `opendota_client.py` calls the API,
   `database.py` holds the SQLite schema, `publish.py` writes the match index
-  to switchboard and `db_copy.py` writes the checked copy of the database.
+  to switchboard and `db_copy.py` writes the dated database backups.
 - Run the tests with `python3 -m unittest discover -v` under Python 3.10 or
   later. They point `OPENDOTA_BASE_URL` at a local fake and never call
   OpenDota.

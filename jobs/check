@@ -23,4 +23,9 @@ if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) e
     exit 1
 fi
 
+[ -f "$SWITCHBOARD_BULK/dota_replays.db" ] || {
+    printf '%s: no database at %s/dota_replays.db\n' "$0" "$SWITCHBOARD_BULK" >&2
+    exit 1
+}
+
 python3 publish.py --check
