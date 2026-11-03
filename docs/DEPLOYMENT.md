@@ -40,7 +40,13 @@ the hub's Worker page, set `max_backstop_s` to at least 10,800, and set the
 
 ## The database's folder
 
-`SWITCHBOARD_BULK` names the folder already holding `dota_replays.db` on the node's local disk (on tiny-md, the folder the hand runs used). Stop hand runs before the first job. The jobs run from the worker's mirror, never from that folder, and the worker's account must own the folder. The folder may be an old clone of this repository; never run `git clean -x` or `git clean -X` in it, which deletes the database and its `-wal` file (`.gitignore` lists `*.db`, `*.db-wal`, `*.db-shm`).
+`SWITCHBOARD_BULK` names the folder already holding `dota_replays.db` on the
+node's local disk (on tiny-md, the folder the hand runs used). Stop hand runs
+before the first job. The jobs run from the worker's mirror, never from that
+folder, and the worker's account must own the folder. The folder may be an old
+clone of this repository; never run `git clean -x` or `git clean -X` in it,
+which deletes the database and its `-wal` file (`.gitignore` lists `*.db`,
+`*.db-wal`, `*.db-shm`).
 
 ## Weekly trigger
 
