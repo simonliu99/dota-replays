@@ -41,7 +41,7 @@ has fewer players or matches than the newest earlier backup.
 The `verify` job checks the newest backup with `db_copy.py --check` and checks
 the replay folder with `replay_folder.py`. `backup-check` exits 1 if `db-backups`
 is missing, holds no backup, holds more than 14 backups, if the newest backup is
-more than 8 days old or in the future, is corrupt, or holds more rows than the
+more than 8 days old or more than one hour in the future, is corrupt, or holds more rows than the
 live database. `folder-check` exits 1 if the replay folder holds any entry at
 its top level that is neither a replay file matching the hub's pattern nor the
 `db-backups` directory (the hub serves any top-level file whose name matches its

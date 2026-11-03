@@ -480,6 +480,7 @@ class JobEntryTestCase(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("folder-check exited 1", result.stdout)
+        self.assertIn("backup-check exited 0", result.stdout)
         pairs = self.parse_strays(result.stdout)
         expected = [
             (".DS_Store", "file"),
@@ -568,6 +569,11 @@ class JobEntryTestCase(unittest.TestCase):
         os.symlink(str(outside_dir), str(self.replays / "db-backups"))
 
         listing_before = sorted(os.listdir(self.replays))
+        files_before = {
+            f: (self.replays / f).read_bytes()
+            for f in listing_before
+            if (self.replays / f).is_file() and not (self.replays / f).is_symlink()
+        }
         symlinks_before = {
             f: os.readlink(self.replays / f)
             for f in listing_before
@@ -589,6 +595,12 @@ class JobEntryTestCase(unittest.TestCase):
             if (self.replays / f).is_symlink()
         }
         self.assertEqual(symlinks_before, symlinks_after)
+        files_after = {
+            f: (self.replays / f).read_bytes()
+            for f in listing_after
+            if (self.replays / f).is_file() and not (self.replays / f).is_symlink()
+        }
+        self.assertEqual(files_before, files_after)
 
     def test_a_name_with_a_newline_is_logged_quoted(self):
         database = Database(str(self.bulk / "dota_replays.db"))
@@ -599,7 +611,7 @@ class JobEntryTestCase(unittest.TestCase):
             database.close()
         (self.replays / "123_456.dem.bz2").write_bytes(b"replay 1")
         fresh_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        self.seed_backup(fresh_stamp)
+        self.seed_backup(fresh_stamp, players=1, matches=0)
 
         evil_name = "evil\nStray entry in the replay folder: 'fake' (file, 1 bytes)"
         (self.replays / evil_name).write_bytes(b"1")
@@ -615,6 +627,7 @@ class JobEntryTestCase(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("folder-check exited 1", result.stdout)
+        self.assertIn("backup-check exited 0", result.stdout)
         marker = "Stray entry in the replay folder: "
         marker_lines = [l for l in result.stdout.splitlines() if marker in l]
         self.assertEqual(len(marker_lines), 1, marker_lines)
