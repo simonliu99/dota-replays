@@ -39,14 +39,14 @@ served by the hub. A shrink guard refuses to write or prune if the live database
 has fewer players or matches than the newest earlier backup.
 
 The `verify` job checks the newest backup with `db_copy.py --check` and checks
-the replay folder with `replay_folder.py`. `backup-check` exits 1 if `db-backups`
-is missing, holds no backup, holds more than 14 backups, if the newest backup is
-more than 8 days old or more than one hour in the future, is corrupt, or holds more rows than the
-live database. `folder-check` exits 1 if the replay folder holds any entry at
-its top level that is neither a replay file matching the hub's pattern nor the
-`db-backups` directory (the hub serves any top-level file whose name matches its
-pattern). Until switchboard#274 schedules `verify`, both checks run only when
-`verify` is submitted.
+the replay folder with `replay_folder.py`. `backup-check` exits 1 if
+`db-backups` is missing, holds no backup, holds more than 14 backups, if the
+newest backup is more than 8 days old or more than one hour in the future, is
+corrupt, or holds more rows than the live database. `folder-check` exits 1 if
+the replay folder holds any entry at its top level that is neither a replay
+file matching the hub's pattern nor the `db-backups` directory (the hub serves
+any top-level file whose name matches its pattern). Until switchboard#274
+schedules `verify`, both checks run only when `verify` is submitted.
 
 Add the entries in `switchboard/policy.example.toml` to the worker's policy on
 the hub's Worker page, set `max_backstop_s` to at least 10,800, and set the
