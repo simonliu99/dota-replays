@@ -58,11 +58,12 @@ To restore from a backup by hand:
 1. Stop jobs on the hub.
 2. Copy the chosen backup to the node's local disk:
    `cp "$DOTA_REPLAY_DIR/db-backups/<name>" "$SWITCHBOARD_BULK/dota_replays.db.restore"`
-3. Check its integrity:
+3. Check its integrity; the command must print `ok`:
    `sqlite3 "$SWITCHBOARD_BULK/dota_replays.db.restore" 'PRAGMA integrity_check;'`
-4. Move the live database and its `-wal` / `-shm` files aside:
-   `mv "$SWITCHBOARD_BULK/dota_replays.db" "$SWITCHBOARD_BULK/dota_replays.db.bak"`
-   `rm -f "$SWITCHBOARD_BULK/dota_replays.db-wal" "$SWITCHBOARD_BULK/dota_replays.db-shm"`
+4. Move the live database and its `-wal` and `-shm` files aside under one new name:
+   `aside="$SWITCHBOARD_BULK/dota_replays.db.before-restore-$(date -u +%Y%m%dT%H%M%SZ)"`
+   `mv "$SWITCHBOARD_BULK/dota_replays.db" "$aside"`
+   `for suffix in -wal -shm; do [ ! -e "$SWITCHBOARD_BULK/dota_replays.db$suffix" ] || mv "$SWITCHBOARD_BULK/dota_replays.db$suffix" "$aside$suffix"; done`
 5. Rename the restored file into place:
    `mv "$SWITCHBOARD_BULK/dota_replays.db.restore" "$SWITCHBOARD_BULK/dota_replays.db"`
 6. Resume jobs.

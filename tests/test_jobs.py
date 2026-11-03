@@ -799,8 +799,12 @@ class DatabaseCopyTestCase(unittest.TestCase):
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         part = self.backup_dir / "dota_replays-20010101T000000Z.db.part"
         part.write_bytes(b"stale part")
+        arabic_part = self.backup_dir / "dota_replays-٢٠٠١٠١٠١T000000Z.db.part"
+        arabic_part.write_bytes(b"arabic part")
         self.assertEqual(db_copy.main(), 0)
         self.assertFalse(part.exists())
+        self.assertTrue(arabic_part.is_file())
+        self.assertEqual(arabic_part.read_bytes(), b"arabic part")
 
     def test_an_unwritable_backup_folder_keeps_the_earlier_backups(self):
         if os.geteuid() == 0:
@@ -818,8 +822,13 @@ class DatabaseCopyTestCase(unittest.TestCase):
         self.backup_dir.chmod(0o555)
         self.addCleanup(self.backup_dir.chmod, 0o755)
 
-        self.assertEqual(db_copy.main(), 1)
+        later = time.gmtime(time.time() + 60)
+        with mock.patch("time.gmtime", return_value=later):
+            with self.assertLogs("db_copy", level="ERROR") as captured:
+                self.assertEqual(db_copy.main(), 1)
+        self.assertIn("Permission denied", "\n".join(captured.output))
         self.assertEqual(first_backup.read_bytes(), first_bytes)
+        self.assertEqual(os.listdir(self.backup_dir), [backups[0]])
 
     def test_a_missing_replay_folder_creates_nothing(self):
         missing = self.root / "missing_replays"
@@ -877,12 +886,11 @@ class DatabaseCopyTestCase(unittest.TestCase):
         self.assertEqual(set(os.listdir(self.backup_dir)), set(seeded_bytes.keys()))
 
     def test_an_existing_backup_name_is_never_overwritten(self):
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
-        target = self.backup_dir / "dota_replays-20261105T133012Z.db"
-        target.write_bytes(b"keep")
+        target = self.seed_backup("20261105T133012Z")
+        kept = target.read_bytes()
         with mock.patch("time.gmtime", return_value=time.struct_time((2026, 11, 5, 13, 30, 12, 3, 309, 0))):
             self.assertEqual(db_copy.main(), 1)
-        self.assertEqual(target.read_bytes(), b"keep")
+        self.assertEqual(target.read_bytes(), kept)
         self.assertFalse(any(n.endswith(".part") for n in os.listdir(self.backup_dir)))
 
     def test_backups_moved_into_held_let_a_smaller_database_back_up(self):
