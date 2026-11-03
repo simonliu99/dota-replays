@@ -38,14 +38,15 @@ Add the entries in `switchboard/policy.example.toml` to the worker's policy on
 the hub's Worker page, set `max_backstop_s` to at least 10,800, and set the
 `bulk-dota-replays` resource to 1.
 
-## Moving the database to the node's local disk
+## The database's folder
 
-1. On the node, as the worker's user: `mkdir -p <local>/dota-replays`.
-2. Stop anything writing the current database on the share.
-3. Copy it while nothing writes: `sqlite3 <old>/dota_replays.db ".backup '<local>/dota-replays/dota_replays.db'"`, then check it with `sqlite3 '<local>/dota-replays/dota_replays.db' 'PRAGMA integrity_check;'` and expect `ok`.
-4. Run `jobs/update` once: it adds the matches played since the last run, downloads missing replays and writes the first copy. Then run `jobs/verify`.
-5. Keep the share's original until both jobs pass. The copy folder is a
-   separate path, so the original is never overwritten.
+`SWITCHBOARD_BULK` names the folder already holding `dota_replays.db` on the
+node's local disk (on tiny-md, the folder the hand runs used). Stop hand runs
+before the first job. The jobs run from the worker's mirror, never from that
+folder, and the worker's account must own the folder. The folder may be an old
+clone of this repository; never run `git clean -x` or `git clean -X` in it,
+which deletes the database and its `-wal` file (`.gitignore` lists `*.db`,
+`*.db-wal`, `*.db-shm`).
 
 ## Weekly trigger
 
