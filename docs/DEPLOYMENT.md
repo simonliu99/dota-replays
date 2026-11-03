@@ -11,7 +11,7 @@ backups in place. The dev Mac submits `update` once a week.
 | Job | Entry | What it does | Backstop | Quiet limit |
 | --- | --- | --- | --- | --- |
 | `update` | `jobs/update` | Updates every tracked player's 100 newest matches, rechecks 30 unparsed matches, writes a dated database backup and publishes the match index | 10,800 s | 600 s |
-| `verify` | `jobs/verify` | Prints `--status`, checks every recorded replay on disk and publishes the match index | 1,800 s | 600 s |
+| `verify` | `jobs/verify` | Prints `--status`, checks every recorded replay on disk, checks the database backups and the replay folder, and publishes the match index | 1,800 s | 600 s |
 | `check` | `jobs/check` | Compares the published match index with the database | 600 s | 300 s |
 
 `check` exits 1 when the published index differs from the database. After the
@@ -37,6 +37,16 @@ Backups live in `$DOTA_REPLAY_DIR/db-backups` as `dota_replays-YYYYMMDDTHHMMSSZ.
 The job keeps 14 backups and prunes older ones. Backups in subfolders are never
 served by the hub. A shrink guard refuses to write or prune if the live database
 has fewer players or matches than the newest earlier backup.
+
+The `verify` job checks the newest backup with `db_copy.py --check` and checks
+the replay folder with `replay_folder.py`. `backup-check` exits 1 if `db-backups`
+is missing, holds no backup, holds more than 14 backups, if the newest backup is
+more than 8 days old or in the future, is corrupt, or holds more rows than the
+live database. `folder-check` exits 1 if the replay folder holds any entry at
+its top level that is neither a replay file matching the hub's pattern nor the
+`db-backups` directory (the hub serves any top-level file whose name matches its
+pattern). Until switchboard#274 schedules `verify`, both checks run only when
+`verify` is submitted.
 
 Add the entries in `switchboard/policy.example.toml` to the worker's policy on
 the hub's Worker page, set `max_backstop_s` to at least 10,800, and set the

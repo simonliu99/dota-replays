@@ -13,6 +13,7 @@ file in db-backups and fsynced before atomic rename: no SQLite connection opens
 a file on the share.
 """
 
+import argparse
 import logging
 import os
 import re
@@ -21,6 +22,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 logging.basicConfig(
@@ -174,7 +176,7 @@ def _prune(backup_dir: Path, backup_name: str) -> None:
             logger.info(f"Pruned old backup {prune_path}")
 
 
-def main(argv=None) -> int:
+def write_backup() -> int:
     """Write the backup; return 0 on success and 1 on any failure."""
     bulk = _directory("SWITCHBOARD_BULK")
     replay_dir = _directory("DOTA_REPLAY_DIR")
@@ -259,6 +261,118 @@ def main(argv=None) -> int:
         f"{time.monotonic() - started:.1f}s"
     )
     return 0
+
+
+def check_backups(max_age_days: int) -> int:
+    """Verify newest database backup and check pruning; return 0 or 1."""
+    bulk = _directory("SWITCHBOARD_BULK")
+    replay_dir = _directory("DOTA_REPLAY_DIR")
+    backup_dir = replay_dir / BACKUP_DIR_NAME
+
+    if not os.path.lexists(backup_dir) or os.path.islink(backup_dir) or not os.path.isdir(backup_dir):
+        logger.error(f"{backup_dir} is missing, a symlink or not a directory")
+        return 1
+
+    # Warn about stale .part files (exit unaffected)
+    with os.scandir(backup_dir) as entries:
+        for entry in entries:
+            if PART_PATTERN.fullmatch(entry.name) and entry.is_file(follow_symlinks=False):
+                logger.warning(f"Stale part file found: {entry.name}")
+
+    candidates = _candidates(backup_dir)
+    if not candidates:
+        logger.error(f"No candidate backups found in {backup_dir}")
+        return 1
+    if len(candidates) > BACKUPS_KEPT:
+        logger.error(
+            f"Too many candidate backups ({len(candidates)} > {BACKUPS_KEPT}) in {backup_dir}"
+        )
+        return 1
+
+    newest_name = candidates[-1]
+    match = BACKUP_PATTERN.fullmatch(newest_name)
+    stamp_str = match.group(1)
+    stamp_time = datetime.strptime(stamp_str, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    now_time = datetime.now(timezone.utc)
+    age_seconds = (now_time - stamp_time).total_seconds()
+    if age_seconds < -3600.0:
+        logger.error(
+            f"Newest backup {newest_name} is more than one hour in the future ({stamp_str})"
+        )
+        return 1
+    age_days = age_seconds / 86400.0
+    if age_days > max_age_days:
+        logger.error(
+            f"Newest backup {newest_name} is {age_days:.1f} days old (max {max_age_days} days)"
+        )
+        return 1
+
+    share_file = backup_dir / newest_name
+    with tempfile.TemporaryDirectory(dir=bulk) as tmp_dir:
+        temp_copy = Path(tmp_dir) / newest_name
+        try:
+            shutil.copyfile(share_file, temp_copy)
+        except OSError as error:
+            logger.error(f"Failed to copy newest backup {share_file}: {error}")
+            return 1
+        if share_file.stat().st_size != temp_copy.stat().st_size:
+            logger.error(f"Size mismatch copying {share_file}")
+            return 1
+        uri = temp_copy.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            rows = conn.execute("PRAGMA integrity_check").fetchall()
+        except sqlite3.Error as error:
+            logger.error(f"Integrity check failed for newest backup {newest_name}: {error}")
+            return 1
+        finally:
+            conn.close()
+        if rows != [("ok",)]:
+            logger.error(
+                f"Integrity check failed for newest backup {newest_name}: {rows[:3]}"
+            )
+            return 1
+        try:
+            backup_players, backup_matches = _counts(temp_copy)
+        except (sqlite3.Error, OSError) as error:
+            logger.error(f"Failed to read counts from newest backup {newest_name}: {error}")
+            return 1
+
+    live_db = bulk / DATABASE_NAME
+    try:
+        live_players, live_matches = _counts(live_db)
+    except (sqlite3.Error, OSError) as error:
+        logger.error(f"Failed to read counts from live database {live_db}: {error}")
+        return 1
+    if backup_players > live_players or backup_matches > live_matches:
+        logger.error(
+            f"Database lost records: live has {live_players} players and {live_matches} matches, "
+            f"but newest backup {newest_name} has {backup_players} players and {backup_matches} matches"
+        )
+        return 1
+
+    logger.info(
+        f"Verified newest backup {newest_name} (age {age_days:.1f} days): "
+        f"{backup_players} players, {backup_matches} matches"
+    )
+    return 0
+
+
+def main(argv=None) -> int:
+    """Parse arguments and write or check database backups."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="Check database backups")
+    parser.add_argument(
+        "--max-age-days",
+        type=int,
+        default=8,
+        help="Maximum age of newest backup in days",
+    )
+    args = parser.parse_args(argv)
+
+    if args.check:
+        return check_backups(args.max_age_days)
+    return write_backup()
 
 
 if __name__ == "__main__":
