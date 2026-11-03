@@ -41,8 +41,8 @@ lists the variables; a `.env` file is read only when the optional
 
 ## Technical notes
 
-- The switchboard jobs, the worker's setup, the weekly trigger and moving the
-  database to the worker's disk are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+- The switchboard jobs, the worker's setup, the weekly trigger and the
+  database's folder are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - Keep the database on a local disk: SQLite's file locking is not safe on NFS.
   Only the replay folder may be on a network share.
 - `dota_replays.py` is the command line, `opendota_client.py` calls the API,
