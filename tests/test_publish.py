@@ -783,6 +783,15 @@ class PublishTestCase(unittest.TestCase):
         self.assertIsNone(disk["last_download"])
         self.assertIsNone(disk["last_verified"])
 
+    def test_a_replay_file_name_ending_in_a_newline_is_null(self):
+        invalid = []
+        name = "8634561791_1891250204.dem.bz2\n"
+
+        result = publish._replay_file({"on_disk": 1, "filename": name}, invalid)
+
+        self.assertIsNone(result)
+        self.assertEqual(invalid, [name])
+
     def test_the_golden_documents_match_byte_for_byte(self):
         self.seed_golden()
 

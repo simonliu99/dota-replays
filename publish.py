@@ -113,7 +113,7 @@ def _replay_file(download: sqlite3.Row | None, invalid: list) -> str | None:
     if download is None or not download["on_disk"]:
         return None
     name = download["filename"] or ""
-    if BULK_FILE_PATTERN.match(name):
+    if BULK_FILE_PATTERN.fullmatch(name):
         return name
     invalid.append(name)
     return None
