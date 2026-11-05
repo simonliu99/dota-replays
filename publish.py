@@ -119,13 +119,99 @@ def _replay_file(download: sqlite3.Row | None, invalid: list) -> str | None:
     return None
 
 
+def _win(row) -> bool | None:
+    """Return whether the tracked player won, or None when the result is unknown."""
+    if row["radiant_win"] is None or row["player_slot"] is None:
+        return None
+    return bool(row["radiant_win"]) == (row["player_slot"] < 128)
+
+
+# A stored timestamp starts with its calendar date: local time from record_download, UTC from the column default.
+DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _date(text) -> str | None:
+    """Return the date a stored timestamp starts with, or None."""
+    if isinstance(text, str) and DATE_PATTERN.match(text):
+        return text[:10]
+    return None
+
+
+def _disk_document(connection: sqlite3.Connection, now_s: int, base: dict) -> dict:
+    """Return the `meta/disk` document: what is on disk and each player's totals."""
+    disk = connection.execute(
+        "SELECT COUNT(*), COALESCE(SUM(file_size), 0), "
+        "COALESCE(SUM(file_size IS NULL), 0) "
+        "FROM downloads WHERE on_disk = TRUE"
+    ).fetchone()
+    span = connection.execute(
+        "SELECT MIN(m.start_time), MAX(m.start_time) FROM downloads d "
+        "JOIN matches m ON m.match_id = d.match_id WHERE d.on_disk = TRUE"
+    ).fetchone()
+    stamps = connection.execute(
+        "SELECT MAX(downloaded_at), MAX(verified_at) FROM downloads"
+    ).fetchone()
+    waiting = connection.execute(
+        "SELECT COUNT(*) FROM matches m "
+        "JOIN match_details md ON md.match_id = m.match_id "
+        "WHERE m.start_time > ? AND md.replay_url IS NOT NULL AND NOT EXISTS "
+        "(SELECT 1 FROM downloads d "
+        " WHERE d.match_id = m.match_id AND d.on_disk = TRUE)",
+        (now_s - 21 * 86400,),
+    ).fetchone()[0]
+    players: dict[int, dict] = {}
+    for row in connection.execute(
+        "SELECT p.player_id, m.match_id, m.radiant_win, m.player_slot, "
+        "d.on_disk, d.file_size "
+        "FROM players p LEFT JOIN matches m ON m.player_id = p.player_id "
+        "LEFT JOIN downloads d ON d.match_id = m.match_id ORDER BY p.player_id"
+    ):
+        entry = players.setdefault(
+            row["player_id"],
+            {
+                "player_id": row["player_id"],
+                "matches": 0,
+                "wins": 0,
+                "losses": 0,
+                "replays": 0,
+                "bytes": 0,
+                "bytes_unknown": 0,
+            },
+        )
+        if row["match_id"] is None:
+            continue
+        entry["matches"] += 1
+        win = _win(row)
+        if win is True:
+            entry["wins"] += 1
+        elif win is False:
+            entry["losses"] += 1
+        if row["on_disk"]:
+            entry["replays"] += 1
+            if row["file_size"] is None:
+                entry["bytes_unknown"] += 1
+            else:
+                entry["bytes"] += row["file_size"]
+    return {
+        "schema": 1,
+        "replays": disk[0],
+        "bytes": disk[1],
+        "bytes_unknown": disk[2],
+        "oldest_start": span[0],
+        "newest_start": span[1],
+        "last_download": _date(stamps[0]),
+        "last_verified": _date(stamps[1]),
+        "waiting": waiting,
+        "failed_downloads": base["failed_downloads"],
+        "exhausted_retries": base["exhausted_retries"],
+        "players": list(players.values()),
+    }
+
+
 def _match_entry(row: sqlite3.Row, parsed: dict, download: sqlite3.Row | None,
                  invalid: list) -> dict:
     """Return one month document's match entry."""
-    if row["radiant_win"] is None or row["player_slot"] is None:
-        win = None
-    else:
-        win = bool(row["radiant_win"]) == (row["player_slot"] < 128)
+    win = _win(row)
     return {
         "match_id": row["match_id"],
         "start_time": row["start_time"],
@@ -189,9 +275,9 @@ def build_index(connection: sqlite3.Connection, published_ms: int,
     """Return the index's documents and what the run did.
 
     `documents` maps (collection, key) to the value bytes to store, including
-    `meta/players`, `meta/heroes` when given, and `meta/summary`. Months are
-    added newest first while the module's stored bytes stay within `budget`; a
-    month over the 256 KiB value limit is left out and reported.
+    `meta/players`, `meta/disk`, `meta/heroes` when given, and `meta/summary`.
+    Months are added newest first while the module's stored bytes stay within
+    `budget`; a month over the 256 KiB value limit is left out and reported.
     """
     players = [
         dict(row)
@@ -248,7 +334,11 @@ def build_index(connection: sqlite3.Connection, published_ms: int,
     )
     oversized_slots = set(oversized)
 
+    base = _base_counts(connection, len(players))
     meta = {("meta", "players"): encode({"players": players})}
+    meta[("meta", "disk")] = encode(
+        _disk_document(connection, published_ms // 1000, base)
+    )
     if heroes_value is not None:
         meta[("meta", "heroes")] = heroes_value
 
@@ -261,7 +351,6 @@ def build_index(connection: sqlite3.Connection, published_ms: int,
         reverse=True,
     )
     selected = list(ordered_months)
-    base = _base_counts(connection, len(players))
     while True:
         documents = dict(meta)
         indexed_matches = 0

@@ -40,7 +40,20 @@ class _SilentServer(_LocalServer):
         time.sleep(2)
 
 
-def seed_database(path, players, matches, details=(), downloads=(), off_disk=()):
+GOLDEN_STAMPS = (
+    (8634561781, 52_428_800, "2024-02-25T06:12:00.000001", "2025-10-28T05:30:00.000002"),
+    (8634561782, 48_234_496, "2024-02-21 03:00:00", "2025-10-28T05:30:01.000003"),
+    (8634561783, 31_457_280, "2024-02-17T06:12:00.000004", None),
+    (8634561784, 60_817_408, "2024-02-13T06:12:00.000005", "2025-10-27 23:59:59"),
+    (8634561785, None, "2024-02-09T06:12:00.000006", "2025-10-28T05:30:02.000007"),
+    (8634561791, 41_943_040, "2024-02-19T06:12:00.000008", "2025-10-28T05:30:03.000009"),
+    (8634561792, 39_845_888, "2024-02-15T06:12:00.000010", "2025-10-28T05:30:04.000011"),
+    (8634561793, 35_651_584, "2024-01-16T06:12:00.000012", "2025-10-28T05:30:05.000013"),
+)
+
+
+def seed_database(path, players, matches, details=(), downloads=(), off_disk=(),
+                  stamps=()):
     """Write a fixture database and close it."""
     database = Database(str(path))
     try:
@@ -62,6 +75,13 @@ def seed_database(path, players, matches, details=(), downloads=(), off_disk=())
             database.conn.commit()
         for match_id in off_disk:
             database.update_on_disk_status(match_id, False)
+        if stamps:
+            database.conn.executemany(
+                "UPDATE downloads SET file_size = ?, downloaded_at = ?, verified_at = ? "
+                "WHERE match_id = ?",
+                [(size, down, ver, mid) for mid, size, down, ver in stamps],
+            )
+            database.conn.commit()
     finally:
         database.close()
 
@@ -236,7 +256,8 @@ class PublishTestCase(unittest.TestCase):
 
     def seed_golden(self):
         players, matches, details, downloads, off_disk = golden_seed()
-        seed_database(self.path, players, matches, details, downloads, off_disk)
+        seed_database(self.path, players, matches, details, downloads, off_disk,
+                      GOLDEN_STAMPS)
 
     def seed_one_match_per_month(self, players, months=156):
         """Seed one match in each month from 2013-01, for every player."""
@@ -261,15 +282,15 @@ class PublishTestCase(unittest.TestCase):
                 )
         seed_database(self.path, players, matches)
 
-    def test_the_first_publish_puts_every_month_and_three_meta_documents(self):
+    def test_the_first_publish_puts_every_month_and_four_meta_documents(self):
         self.seed_one_match_per_month([(1, "One"), (2, "Two"), (3, "Three")])
 
         code, log = self.run_main()
 
         self.assertEqual(code, 0, log)
-        self.assertEqual(self.hub.writes("PUT"), 3 * 156 + 3)
+        self.assertEqual(self.hub.writes("PUT"), 3 * 156 + 4)
         self.assertEqual(self.hub.writes("DELETE"), 0)
-        self.assertEqual(len(self.hub.documents), 3 * 156 + 3)
+        self.assertEqual(len(self.hub.documents), 3 * 156 + 4)
         self.assertTrue(
             self.hub.paths("PUT")[-1].endswith("/docs/meta/summary"),
             self.hub.paths("PUT")[-1],
@@ -292,7 +313,7 @@ class PublishTestCase(unittest.TestCase):
         self.assertEqual(self.hub.paths("PUT")[-1].rsplit("/", 2)[-2:], ["meta", "summary"])
         self.assertEqual(self.hub.writes("DELETE"), deletes)
 
-    def test_a_new_match_puts_its_month_and_the_summary(self):
+    def test_a_new_match_puts_its_month_the_disk_document_and_the_summary(self):
         self.seed_one_match_per_month([(1, "One")], months=2)
         self.assertEqual(self.run_main()[0], 0)
         database = Database(str(self.path))
@@ -320,7 +341,7 @@ class PublishTestCase(unittest.TestCase):
         code, log = self.run_main()
 
         self.assertEqual(code, 0, log)
-        self.assertEqual(self.hub.writes("PUT") - puts, 2)
+        self.assertEqual(self.hub.writes("PUT") - puts, 3)
         self.assertEqual(
             self.hub.document("matches.1", "y:798697")["matches"][0]["match_id"],
             8_000_009_999,
@@ -598,6 +619,169 @@ class PublishTestCase(unittest.TestCase):
         self.assertIsNone(
             self.hub.document(f"matches.{PLAYER}", JANUARY)["matches"][0]["replay_file"]
         )
+
+    def test_a_replay_moved_off_disk_changes_the_disk_document(self):
+        self.seed_golden()
+        self.assertEqual(self.run_main()[0], 0)
+        self.assertIsNotNone(self.hub.document("meta", "disk"))
+        before = self.hub.document("meta", "disk")
+        size = next(
+            size for match_id, size, _, _ in GOLDEN_STAMPS if match_id == 8634561781
+        )
+        database = Database(str(self.path))
+        try:
+            database.update_on_disk_status(8634561781, False)
+        finally:
+            database.close()
+
+        code, log = self.run_main(published_ms=PUBLISHED_MS + 60_000)
+
+        self.assertEqual(code, 0, log)
+        after = self.hub.document("meta", "disk")
+        self.assertEqual(after["replays"], before["replays"] - 1)
+        self.assertEqual(after["bytes"], before["bytes"] - size)
+
+    def test_wins_and_losses_follow_the_player_slot(self):
+        self.seed_golden()
+
+        code, log = self.run_main()
+
+        self.assertEqual(code, 0, log)
+        self.assertIsNotNone(self.hub.document("meta", "disk"))
+        players = {
+            entry["player_id"]: entry
+            for entry in self.hub.document("meta", "disk")["players"]
+        }
+        # 8634561783 has radiant_win true and a Dire slot, so it is a loss, and
+        # 8634561790 has no result, so it counts in `matches` only.
+        self.assertEqual(
+            players[PLAYER],
+            {
+                "player_id": PLAYER,
+                "matches": 6,
+                "wins": 3,
+                "losses": 2,
+                "replays": 5,
+                "bytes": 192_937_984,
+                "bytes_unknown": 1,
+            },
+        )
+        self.assertEqual(
+            players[OTHER_PLAYER],
+            {
+                "player_id": OTHER_PLAYER,
+                "matches": 3,
+                "wins": 3,
+                "losses": 0,
+                "replays": 2,
+                "bytes": 81_788_928,
+                "bytes_unknown": 0,
+            },
+        )
+
+    def test_a_match_past_21_days_is_not_waiting(self):
+        now_s = PUBLISHED_MS // 1000
+        matches = [
+            {
+                "player_id": PLAYER,
+                "match_id": 8_634_562_001,
+                "start_time": now_s - 86_400,
+                "duration": 2_400,
+                "hero_id": 1,
+                "kills": 1,
+                "deaths": 2,
+                "assists": 3,
+                "radiant_win": True,
+                "player_slot": 0,
+            },
+            {
+                "player_id": PLAYER,
+                "match_id": 8_634_562_002,
+                "start_time": now_s - 22 * 86_400,
+                "duration": 2_400,
+                "hero_id": 2,
+                "kills": 2,
+                "deaths": 3,
+                "assists": 4,
+                "radiant_win": True,
+                "player_slot": 0,
+            },
+        ]
+        details = [
+            (
+                8_634_562_001,
+                {"version": None, "replay_url": "http://replay.example/c.dem.bz2"},
+            ),
+            (
+                8_634_562_002,
+                {"version": None, "replay_url": "http://replay.example/d.dem.bz2"},
+            ),
+        ]
+        seed_database(self.path, [(PLAYER, "Arteezy")], matches, details)
+
+        code, log = self.run_main()
+
+        self.assertEqual(code, 0, log)
+        self.assertIsNotNone(self.hub.document("meta", "disk"))
+        self.assertEqual(self.hub.document("meta", "disk")["waiting"], 1)
+
+    def test_a_null_file_size_counts_as_unknown(self):
+        self.seed_golden()
+
+        code, log = self.run_main()
+
+        self.assertEqual(code, 0, log)
+        self.assertIsNotNone(self.hub.document("meta", "disk"))
+        disk = self.hub.document("meta", "disk")
+        on_disk = {match_id for match_id, _ in golden_seed()[3]} - {8634561793}
+        self.assertEqual(disk["bytes_unknown"], 1)
+        self.assertEqual(
+            disk["bytes"],
+            sum(
+                size
+                for match_id, size, _, _ in GOLDEN_STAMPS
+                if match_id in on_disk and size is not None
+            ),
+        )
+
+    def test_a_timestamp_publishes_as_its_date(self):
+        players, matches, details, downloads, off_disk = golden_seed()
+        stamps = tuple(
+            (
+                match_id,
+                size,
+                "2026-10-30T05:31:12.123456" if match_id == 8634561781 else downloaded,
+                "2026-10-30 12:31:12" if match_id == 8634561781 else verified,
+            )
+            for match_id, size, downloaded, verified in GOLDEN_STAMPS
+        )
+        seed_database(self.path, players, matches, details, downloads, off_disk, stamps)
+
+        code, log = self.run_main()
+
+        self.assertEqual(code, 0, log)
+        self.assertIsNotNone(self.hub.document("meta", "disk"))
+        disk = self.hub.document("meta", "disk")
+        self.assertEqual(disk["last_download"], "2026-10-30")
+        self.assertEqual(disk["last_verified"], "2026-10-30")
+
+    def test_no_replay_on_disk_publishes_zeros_and_nulls(self):
+        players, matches, details, _, _ = golden_seed()
+        seed_database(self.path, players, matches, details)
+
+        code, log = self.run_main()
+
+        self.assertEqual(code, 0, log)
+        self.assertIsNotNone(self.hub.document("meta", "disk"))
+        disk = self.hub.document("meta", "disk")
+        self.assertEqual(disk["replays"], 0)
+        self.assertEqual(disk["bytes"], 0)
+        self.assertEqual(disk["bytes_unknown"], 0)
+        self.assertEqual(disk["waiting"], 0)
+        self.assertIsNone(disk["oldest_start"])
+        self.assertIsNone(disk["newest_start"])
+        self.assertIsNone(disk["last_download"])
+        self.assertIsNone(disk["last_verified"])
 
     def test_a_replay_file_name_ending_in_a_newline_is_null(self):
         invalid = []
