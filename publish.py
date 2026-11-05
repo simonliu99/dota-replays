@@ -126,7 +126,7 @@ def _win(row) -> bool | None:
     return bool(row["radiant_win"]) == (row["player_slot"] < 128)
 
 
-# A stored timestamp starts with its UTC calendar date.
+# A stored timestamp starts with its calendar date: local time from record_download, UTC from the column default.
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
