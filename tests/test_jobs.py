@@ -825,11 +825,6 @@ class SubmitHelperTestCase(unittest.TestCase):
                 self.assertEqual(self.value_after(argv, "--base"), self.head)
                 self.assertEqual(self.value_after(argv, "--commit"), self.head)
                 self.assertEqual(self.value_after(argv, "--tree"), self.tree)
-                self.assertEqual(
-                    self.value_after(argv, "--demand-cores"),
-                    "1",
-                )
-                self.assertEqual(self.value_after(argv, "--demand-mem-mb"), "512")
                 self.assertEqual(self.value_after(argv, "--backstop"), backstop)
                 self.assertEqual(self.value_after(argv, "--quiet"), quiet)
                 self.assertRegex(self.head, r"^[0-9a-f]{40}$")
@@ -842,6 +837,16 @@ class SubmitHelperTestCase(unittest.TestCase):
                 result = self.run_helper(["--hub", "https://hub.example.com", task])
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertNotIn("--secret", self.recorded_argv())
+
+    def test_the_argv_declares_no_cores_or_memory(self):
+        for task in ("update", "verify", "check"):
+            with self.subTest(task=task):
+                self.stub_log.unlink(missing_ok=True)
+                result = self.run_helper(["--hub", "https://hub.example.com", task])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                argv = self.recorded_argv()
+                self.assertNotIn("--demand-mem-mb", argv)
+                self.assertNotIn("--demand-cores", argv)
 
     def test_a_call_with_only_hub_submits(self):
         result = self.run_helper(["--hub", "https://hub.example.com", "update"])

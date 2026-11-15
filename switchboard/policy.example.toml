@@ -4,7 +4,8 @@
 # sets `SWITCHBOARD_MODULE_TOKEN` for every job of these tasks, so list no
 # `secrets`.
 #
-# The worker needs max_backstop_s of at least 10800 and bulk-dota-replays=1.
+# The worker needs max_backstop_s of at least 10800, bulk-dota-replays=1, and a
+# memory kill limit (`max_mem_mb`) of 0 or at least 3,072.
 # The tasks' backstops are update 10800, verify 1800 and check 600; the submit
 # helper passes the same numbers.
 # SWITCHBOARD_BULK is the database's existing folder on the node's local disk.

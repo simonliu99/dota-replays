@@ -53,6 +53,11 @@ Add the entries in `switchboard/policy.example.toml` to the worker's policy on
 the hub's Worker page, set `max_backstop_s` to at least 10,800, and set the
 `bulk-dota-replays` resource to 1.
 
+Set the worker's memory kill limit (`max_mem_mb`, on its Worker page) to 0 or at
+least 3,072 MB. It is the only memory limit since switchboard 0.20.0, and
+`update` peaked at 2,221 MB in job `20261110T071920660000Z-b089` (92 replays, a
+765,624,320-byte database).
+
 ## The database's folder
 
 `SWITCHBOARD_BULK` names the folder already holding `dota_replays.db` on the

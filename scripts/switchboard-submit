@@ -12,7 +12,8 @@
 #
 # `switchboard submit` takes its token from this host's agent binding for
 # `--hub`. The hub sets SWITCHBOARD_MODULE_TOKEN in each job, so the helper
-# names no secret.
+# names no secret. The worker's memory kill limit (`max_mem_mb`) is the only
+# memory limit since switchboard 0.20.0, and `update` peaked at 2,221 MB.
 
 set -eu
 
@@ -129,7 +130,5 @@ exec switchboard submit \
     --tree "$tree" \
     --entry "jobs/$task" \
     --gres bulk-dota-replays=1 \
-    --demand-cores 1 \
-    --demand-mem-mb 512 \
     --backstop "$backstop" \
     --quiet "$quiet"
