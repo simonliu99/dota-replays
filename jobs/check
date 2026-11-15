@@ -4,8 +4,8 @@
 # Read-only on the dataset and the store. The entry exits 1 on any difference,
 # which is the job's failed status: the index the page lists has drifted from
 # the database. The worker supplies SWITCHBOARD_BULK (the local folder holding
-# the database) and SWITCHBOARD_HUB, plus SWITCHBOARD_MODULE_TOKEN as a task
-# secret. The entry never creates a folder.
+# the database) and SWITCHBOARD_HUB, plus SWITCHBOARD_MODULE_TOKEN, which the
+# hub sets for the job. The entry never creates a folder.
 
 set -eu
 

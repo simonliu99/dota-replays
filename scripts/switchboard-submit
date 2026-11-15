@@ -11,7 +11,8 @@
 # hours then submits nothing; the following Thursday's time does.
 #
 # `switchboard submit` takes its token from this host's agent binding for
-# `--hub`.
+# `--hub`. The hub sets SWITCHBOARD_MODULE_TOKEN in each job, so the helper
+# names no secret.
 
 set -eu
 
@@ -128,7 +129,6 @@ exec switchboard submit \
     --tree "$tree" \
     --entry "jobs/$task" \
     --gres bulk-dota-replays=1 \
-    --secret SWITCHBOARD_MODULE_TOKEN \
     --demand-cores 1 \
     --demand-mem-mb 512 \
     --backstop "$backstop" \

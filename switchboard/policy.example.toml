@@ -1,6 +1,8 @@
 # The dota-replays jobs on the Maryland worker. Add these entries to the
 # worker's policy on the hub's Worker page and edit the `supply` values to the
-# node's own paths; `since` is the oldest commit the worker may run.
+# node's own paths; `since` is the oldest commit the worker may run. The hub
+# sets `SWITCHBOARD_MODULE_TOKEN` for every job of these tasks, so list no
+# `secrets`.
 #
 # The worker needs max_backstop_s of at least 10800 and bulk-dota-replays=1.
 # The tasks' backstops are update 10800, verify 1800 and check 600; the submit
@@ -13,14 +15,13 @@
 [[repo]]
 name = "simonliu99/dota-replays"
 url = "https://github.com/simonliu99/dota-replays.git"
-since = "6c0bc9f825271240346fbba633dc00f3bc9d8520"
+since = "bba4c5f57c8ce4ab71cfd1b5c8594fe69b74a3f6"
 
 [[task]]
 repo = "simonliu99/dota-replays"
 name = "update"
 entry = "jobs/update"
 args = []
-secrets = ["SWITCHBOARD_MODULE_TOKEN"]
 supply = { SWITCHBOARD_BULK = "/home/<user>/dota-replays", DOTA_REPLAY_DIR = "/mnt/truenas/dota-replays/replays", SWITCHBOARD_HUB = "https://switchboard.example.com" }
 
 [[task]]
@@ -28,7 +29,6 @@ repo = "simonliu99/dota-replays"
 name = "verify"
 entry = "jobs/verify"
 args = []
-secrets = ["SWITCHBOARD_MODULE_TOKEN"]
 supply = { SWITCHBOARD_BULK = "/home/<user>/dota-replays", DOTA_REPLAY_DIR = "/mnt/truenas/dota-replays/replays", SWITCHBOARD_HUB = "https://switchboard.example.com" }
 
 [[task]]
@@ -36,5 +36,4 @@ repo = "simonliu99/dota-replays"
 name = "check"
 entry = "jobs/check"
 args = []
-secrets = ["SWITCHBOARD_MODULE_TOKEN"]
 supply = { SWITCHBOARD_BULK = "/home/<user>/dota-replays", SWITCHBOARD_HUB = "https://switchboard.example.com" }

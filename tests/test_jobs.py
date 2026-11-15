@@ -29,6 +29,7 @@ VERIFY_ENTRY = ROOT / "jobs" / "verify"
 CHECK_ENTRY = ROOT / "jobs" / "check"
 SUBMIT_HELPER = ROOT / "scripts" / "switchboard-submit"
 PLIST = ROOT / "switchboard" / "dev.dota-replays.update.plist"
+POLICY_EXAMPLE = ROOT / "switchboard" / "policy.example.toml"
 HUB_TOKEN = "sbm_test_token"
 
 PLAYER_ID = 86745912
@@ -821,9 +822,6 @@ class SubmitHelperTestCase(unittest.TestCase):
                 self.assertEqual(
                     self.value_after(argv, "--gres"), "bulk-dota-replays=1"
                 )
-                self.assertEqual(
-                    self.value_after(argv, "--secret"), "SWITCHBOARD_MODULE_TOKEN"
-                )
                 self.assertEqual(self.value_after(argv, "--base"), self.head)
                 self.assertEqual(self.value_after(argv, "--commit"), self.head)
                 self.assertEqual(self.value_after(argv, "--tree"), self.tree)
@@ -836,6 +834,14 @@ class SubmitHelperTestCase(unittest.TestCase):
                 self.assertEqual(self.value_after(argv, "--quiet"), quiet)
                 self.assertRegex(self.head, r"^[0-9a-f]{40}$")
                 self.assertNotIn("--token-file", argv)
+
+    def test_the_argv_names_no_secret(self):
+        for task in ("update", "verify", "check"):
+            with self.subTest(task=task):
+                self.stub_log.unlink(missing_ok=True)
+                result = self.run_helper(["--hub", "https://hub.example.com", task])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("--secret", self.recorded_argv())
 
     def test_a_call_with_only_hub_submits(self):
         result = self.run_helper(["--hub", "https://hub.example.com", "update"])
@@ -1426,6 +1432,15 @@ class TriggerTestCase(unittest.TestCase):
             plist["StartCalendarInterval"],
             [{"Weekday": 4, "Hour": 5, "Minute": 30}],
         )
+
+
+class PolicyExampleTestCase(unittest.TestCase):
+    def test_the_policy_example_lists_no_secrets(self):
+        text = POLICY_EXAMPLE.read_text(encoding="utf-8")
+
+        self.assertEqual(text.count("[[task]]"), 3)
+        self.assertIsNone(re.search(r"(?m)^\s*secrets\s*=", text))
+        self.assertIn('since = "bba4c5f57c8ce4ab71cfd1b5c8594fe69b74a3f6"', text)
 
 
 if __name__ == "__main__":

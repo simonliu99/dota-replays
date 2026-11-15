@@ -22,8 +22,9 @@ published index.
 
 Each entry reads `SWITCHBOARD_BULK`, the node's local folder holding
 `dota_replays.db`. `update` and `verify` also read `DOTA_REPLAY_DIR`, the
-TrueNAS replay folder. The publish step reads `SWITCHBOARD_HUB` and the task secret
-`SWITCHBOARD_MODULE_TOKEN`. An entry exits 1 when one of these folder variables
+TrueNAS replay folder. The publish step reads `SWITCHBOARD_HUB` and
+`SWITCHBOARD_MODULE_TOKEN`, which the hub sets for each job; the tasks list no
+`secrets`. An entry exits 1 when one of these folder variables
 is unset or not a directory, when `$SWITCHBOARD_BULK/dota_replays.db` is missing,
 or when `python3` is below 3.10. The entries never create a folder outside an
 existing one on the share, so a missing mount fails the job instead of writing
