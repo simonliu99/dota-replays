@@ -14,6 +14,7 @@ from tests.support import (
     FIXTURE_PATH,
     RecordedOpenDota,
     WorkingDirectory,
+    closed_port,
     load_fixture,
 )
 
@@ -105,7 +106,9 @@ class FakeOpenDotaTestCase(unittest.TestCase):
             self.assertIsNone(client.get_player_matches(self.player_id))
 
     def test_a_refused_connection_answers_a_failed_fetch(self):
-        client = opendota_client.OpenDotaClient(base_url="http://127.0.0.1:9/api")
+        client = opendota_client.OpenDotaClient(
+            base_url=f"http://127.0.0.1:{closed_port()}/api"
+        )
         with mock.patch.object(opendota_client.time, "sleep"):
             self.assertIsNone(client.get_player(self.player_id))
 

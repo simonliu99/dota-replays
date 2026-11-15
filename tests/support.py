@@ -7,6 +7,7 @@ loopback interface and run in a thread, so a test talks to them over HTTP.
 
 import json
 import os
+import socket
 import socketserver
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,6 +15,19 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "opendota.json"
+
+
+def closed_port() -> int:
+    """Return a loopback port that refuses connections on this host.
+
+    Bind an ephemeral port, read it, and close the socket: nothing listens
+    there afterwards, so a client's connect is refused at once. A fixed port
+    such as 9 is refused on macOS but filtered on WSL2, where each request then
+    waits for its timeout instead.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
 
 
 def load_fixture(path: str | Path = FIXTURE_PATH) -> dict:
