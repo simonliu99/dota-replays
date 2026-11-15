@@ -28,10 +28,11 @@ exec "$found" "$0" "$@"
 # Usage: scripts/sequence --run <dir> [--bound <s>]
 #
 # The interpreter is python3.13 from PATH when it is there, else python3 when
-# it reports 3.12 or newer, else nothing runs and the script exits 2 naming what
-# it found (the shell preamble above, which compares the reported version). The suite is `python -m unittest discover
-# -v --durations 3` from the repository root: `-v` gives the job's quiet limit
-# a line per case, and `--durations` names the slowest case.
+# it reports 3.12 or newer, else nothing runs and the script exits 2 naming
+# what it found (the shell preamble above compares the reported version). The
+# suite is `python -m unittest discover -v --durations 3` from the repository
+# root: `-v` gives the job's quiet limit a line per case, and `--durations`
+# names the slowest case.
 #
 # The run directory is created when it is missing and must be empty when it is
 # not. It holds `unittest.log` (the suite's merged output, also streamed to
@@ -50,7 +51,9 @@ exec "$found" "$0" "$@"
 # the bound did not expire, the verdict is `OK...` and at least one test ran.
 # A refusal (an unknown or missing argument, a non-empty run directory or a
 # dirty checkout) exits 2 before any summary or record. A HUP, INT or TERM
-# settles the step through the helper and dies by the signal.
+# settles the step through the helper and dies by the signal. The suite stays
+# in this script's process group, so the worker's group stop reaches both; a
+# TERM to this process alone leaves the suite to finish by itself.
 #
 # The step and its progress records go to the hub through
 # scripts/lib/run_queue_progress.py, agent-workflow's version 1 copied byte for
@@ -197,14 +200,15 @@ def parse_suite(text):
         if not match:
             continue
         verdict = line.strip()
+        counts = dict.fromkeys(COUNTS, 0)
         for token in (match.group(2) or "").split(","):
             key, _, value = token.strip().partition("=")
             if key in counts and value.isdigit():
                 counts[key] = int(value)
     slowest = ""
     lines = text.splitlines()
-    for index, line in enumerate(lines):
-        if line.strip() != "Slowest test durations":
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].strip() != "Slowest test durations":
             continue
         for candidate in lines[index + 1:]:
             stripped = candidate.strip()

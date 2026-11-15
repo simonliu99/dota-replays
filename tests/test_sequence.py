@@ -60,6 +60,23 @@ class Fixture(unittest.TestCase):
         threading.Event().wait(120)
 """
 
+NESTED_FAILURE = '''\
+import unittest
+
+NESTED = (
+    "\\nSlowest test durations\\n"
+    + "-" * 70
+    + "\\n0.001s     test_inner (inner.Inner.test_inner)\\n\\n"
+    + "-" * 70
+    + "\\nRan 5 tests in 0.001s\\n\\nOK (skipped=4)\\n"
+)
+
+
+class Fixture(unittest.TestCase):
+    def test_fails_with_nested_output(self):
+        self.fail(NESTED)
+'''
+
 
 def tokens(line):
     """Return a record's key=value tokens; detail= and verdict= end the line."""
@@ -214,6 +231,24 @@ class SequenceTestCase(unittest.TestCase):
         self.assertEqual(tokens(records[-1])["state"], "fail")
         self.assertEqual(tokens(records[-1])["failing"], "2")
 
+    def test_the_summary_reads_the_suites_own_verdict_and_durations(self):
+        self.build(NESTED_FAILURE)
+        run_dir = self.root / "run"
+        code, output = self.code(["--run", str(run_dir)])
+        self.assertEqual(code, 1, output)
+        lines = self.summary_lines(run_dir)
+        step = [line for line in lines if line.startswith("step unittest ")]
+        self.assertEqual(len(step), 1, lines)
+        fields = tokens(step[0])
+        self.assertEqual(
+            (fields["ran"], fields["failures"], fields["errors"], fields["skipped"]),
+            ("1", "1", "0", "0"),
+            step[0],
+        )
+        slowest = [line for line in lines if line.startswith("slowest ")]
+        self.assertEqual(len(slowest), 1, lines)
+        self.assertIn("test_fails_with_nested_output", slowest[0])
+
     def test_no_tests_fails(self):
         self.build()
         run_dir = self.root / "run"
@@ -294,6 +329,22 @@ class SequenceTestCase(unittest.TestCase):
         parts = python[0].split(None, 2)
         self.assertEqual(parts[2], platform.python_version(), python[0])
         self.assertTrue(os.path.samefile(parts[1], sys.executable), python[0])
+        self.assertEqual(self.summary_lines(run_dir)[-1], "result PASS")
+
+    def test_python313_is_preferred_over_python3(self):
+        self.build(PASSING)
+        both = self.make_bin(("python3.13",))
+        decoy = both / "python3"
+        decoy.write_text(
+            "#!/bin/sh\n"
+            "case \"$1\" in -c) printf '3.12.0\\n'; exit 0 ;; esac\n"
+            "exit 3\n",
+            encoding="utf-8",
+        )
+        decoy.chmod(0o755)
+        run_dir = self.root / "run"
+        code, output = self.code(["--run", str(run_dir)], both)
+        self.assertEqual(code, 0, output)
         self.assertEqual(self.summary_lines(run_dir)[-1], "result PASS")
 
     def test_without_a_python312_or_newer_the_job_refuses(self):
