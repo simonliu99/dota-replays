@@ -12,7 +12,13 @@ from unittest import mock
 import dota_replays
 import opendota_client
 from database import Database
-from tests.support import FIXTURE_PATH, RecordedOpenDota, ReplayServer, load_fixture
+from tests.support import (
+    FIXTURE_PATH,
+    RecordedOpenDota,
+    ReplayServer,
+    closed_port,
+    load_fixture,
+)
 
 PLAYER_A = 101
 PLAYER_B = 202
@@ -251,7 +257,9 @@ class ExitCodeTestCase(unittest.TestCase):
         }
         for match_id, details in stored.items():
             db.upsert_match_details(match_id, details)
-        client = opendota_client.OpenDotaClient(base_url="http://127.0.0.1:9/api")
+        client = opendota_client.OpenDotaClient(
+            base_url=f"http://127.0.0.1:{closed_port()}/api"
+        )
 
         with mock.patch.object(opendota_client.time, "sleep"):
             code, output = self.run_main("--refresh", client=client)

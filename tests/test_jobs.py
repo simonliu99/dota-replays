@@ -1402,6 +1402,10 @@ class TriggerTestCase(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(os.access(script, os.X_OK), f"{script} is not executable")
 
+    @unittest.skipUnless(
+        shutil.which("plutil"),
+        "plutil is a macOS tool; this case lints the launchd plist",
+    )
     def test_plutil_accepts_the_trigger(self):
         result = subprocess.run(
             ["plutil", "-lint", str(PLIST)],

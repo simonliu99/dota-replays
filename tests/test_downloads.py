@@ -9,7 +9,7 @@ from pathlib import Path
 from database import Database
 from dota_replays import DotaReplays
 from opendota_client import OpenDotaClient
-from tests.support import ReplayServer, WorkingDirectory
+from tests.support import ReplayServer, WorkingDirectory, closed_port
 
 PLAYER_ID = 1
 MATCH_ID = 8554321
@@ -28,7 +28,7 @@ class ReplayDownloadTestCase(unittest.TestCase):
     def app(self) -> DotaReplays:
         return DotaReplays(
             db=self.db,
-            client=OpenDotaClient(base_url="http://127.0.0.1:9/api"),
+            client=OpenDotaClient(base_url=f"http://127.0.0.1:{closed_port()}/api"),
             replay_dir=self.replay_dir,
             wait_for_parse=False,
         )
