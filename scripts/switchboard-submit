@@ -1,14 +1,19 @@
 #!/bin/sh
 # Submit one dota-replays job to the switchboard hub.
 #
-# Usage: scripts/switchboard-submit --hub <url> --token-file <file> \
-#            [--not-before HH:MM] update|verify|check
+# Usage: scripts/switchboard-submit --hub <url> [--not-before HH:MM] \
+#            update|verify|check
 #
 # The helper keeps a bare clone of the public repository and fetches master
 # before every submit, so the job runs the commit master points at now.
 # --not-before refuses a run before that Pacific time: launchd runs a calendar
 # time missed while the Mac slept at its next wake, and a wake in the small
 # hours then submits nothing; the following Thursday's time does.
+#
+# `switchboard submit` takes its token from this host's agent binding for
+# `--hub`. The hub sets SWITCHBOARD_MODULE_TOKEN in each job, so the helper
+# names no secret. The worker's memory kill limit (`max_mem_mb`) is the only
+# memory limit since switchboard 0.20.0, and `update` peaked at 2,221 MB.
 
 set -eu
 
@@ -18,12 +23,12 @@ CACHE_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/dota-replays-submit
 CLONE_DIR=$CACHE_DIR/repo.git
 
 usage() {
-    printf 'usage: %s --hub <url> --token-file <file> [--not-before HH:MM] update|verify|check\n' "$0" >&2
+    printf 'usage: %s --hub <url> [--not-before HH:MM] update|verify|check\n' "$0" >&2
     exit 2
 }
 
 help() {
-    printf 'usage: %s --hub <url> --token-file <file> [--not-before HH:MM] update|verify|check\n' "$0"
+    printf 'usage: %s --hub <url> [--not-before HH:MM] update|verify|check\n' "$0"
     exit 0
 }
 
@@ -37,7 +42,6 @@ minutes() {
 }
 
 hub=''
-token_file=''
 not_before=''
 task=''
 while [ $# -gt 0 ]; do
@@ -45,11 +49,6 @@ while [ $# -gt 0 ]; do
         --hub)
             [ $# -ge 2 ] || usage
             hub=$2
-            shift 2
-            ;;
-        --token-file)
-            [ $# -ge 2 ] || usage
-            token_file=$2
             shift 2
             ;;
         --not-before)
@@ -72,8 +71,6 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$hub" ] || { printf '%s: --hub is required\n' "$0" >&2; exit 2; }
-[ -n "$token_file" ] || { printf '%s: --token-file is required\n' "$0" >&2; exit 2; }
-[ -f "$token_file" ] || { printf '%s: token file not found: %s\n' "$0" "$token_file" >&2; exit 2; }
 
 case "$task" in
     update)
@@ -123,7 +120,6 @@ tree=$(git --git-dir="$CLONE_DIR" rev-parse "$sha^{tree}")
 
 exec switchboard submit \
     --hub "$hub" \
-    --token-file "$token_file" \
     --project dota-replays \
     --task "$task" \
     --code git \
@@ -134,8 +130,5 @@ exec switchboard submit \
     --tree "$tree" \
     --entry "jobs/$task" \
     --gres bulk-dota-replays=1 \
-    --secret SWITCHBOARD_MODULE_TOKEN \
-    --demand-cores 1 \
-    --demand-mem-mb 512 \
     --backstop "$backstop" \
     --quiet "$quiet"

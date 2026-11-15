@@ -22,8 +22,9 @@ published index.
 
 Each entry reads `SWITCHBOARD_BULK`, the node's local folder holding
 `dota_replays.db`. `update` and `verify` also read `DOTA_REPLAY_DIR`, the
-TrueNAS replay folder. The publish step reads `SWITCHBOARD_HUB` and the task secret
-`SWITCHBOARD_MODULE_TOKEN`. An entry exits 1 when one of these folder variables
+TrueNAS replay folder. The publish step reads `SWITCHBOARD_HUB` and
+`SWITCHBOARD_MODULE_TOKEN`, which the hub sets for each job; the tasks list no
+`secrets`. An entry exits 1 when one of these folder variables
 is unset or not a directory, when `$SWITCHBOARD_BULK/dota_replays.db` is missing,
 or when `python3` is below 3.10. The entries never create a folder outside an
 existing one on the share, so a missing mount fails the job instead of writing
@@ -51,6 +52,11 @@ schedules `verify`, both checks run only when `verify` is submitted.
 Add the entries in `switchboard/policy.example.toml` to the worker's policy on
 the hub's Worker page, set `max_backstop_s` to at least 10,800, and set the
 `bulk-dota-replays` resource to 1.
+
+Set the worker's memory kill limit (`max_mem_mb`, on its Worker page) to 0 or at
+least 3,072 MB. It is the only memory limit since switchboard 0.20.0, and
+`update` peaked at 2,221 MB in job `20261110T071920660000Z-b089` (92 replays, a
+765,624,320-byte database).
 
 ## The database's folder
 
@@ -89,9 +95,11 @@ that submits `update` every Thursday at 05:30 Pacific. launchd runs a time
 missed while the Mac slept at its next wake, and `--not-before 05:00` refuses a
 wake before 05:00, so that week's run waits for the following Thursday.
 
-1. Mint an `sba_` agent token for the Mac on the hub's Access page and save it to `~/.config/switchboard/dota-replays-submit.token`, mode `0600`.
-2. Edit the plist: `--hub` names the hub, and the token and script paths must
-   match the Mac.
+1. Approve the Mac's agent binding once, by running
+   `switchboard client request --agent --hub https://<hub> --wait` and approving
+   its code on the hub's Access page.
+2. Edit the plist: `--hub` names the hub, and the script path must match the
+   Mac.
 3. Install it:
 
    ```bash
@@ -103,7 +111,7 @@ Its output goes to `~/Library/Logs/dota-replays-update.log`. To submit a job by
 hand:
 
 ```bash
-scripts/switchboard-submit --hub https://<hub> --token-file ~/.config/switchboard/dota-replays-submit.token update
+scripts/switchboard-submit --hub https://<hub> update
 ```
 
 ## Catching up after a gap

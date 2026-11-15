@@ -29,6 +29,7 @@ VERIFY_ENTRY = ROOT / "jobs" / "verify"
 CHECK_ENTRY = ROOT / "jobs" / "check"
 SUBMIT_HELPER = ROOT / "scripts" / "switchboard-submit"
 PLIST = ROOT / "switchboard" / "dev.dota-replays.update.plist"
+POLICY_EXAMPLE = ROOT / "switchboard" / "policy.example.toml"
 HUB_TOKEN = "sbm_test_token"
 
 PLAYER_ID = 86745912
@@ -688,8 +689,6 @@ class SubmitHelperTestCase(unittest.TestCase):
         self.date_log = self.root / "date-calls.txt"
         self.gitconfig = self.root / "gitconfig"
         self.gitconfig.write_text("", encoding="utf-8")
-        self.token = self.root / "submit.token"
-        self.token.write_text("sba_test_token\n", encoding="utf-8")
         self.write_stub(
             "switchboard",
             "#!/bin/sh\n"
@@ -809,8 +808,6 @@ class SubmitHelperTestCase(unittest.TestCase):
                     [
                         "--hub",
                         "https://hub.example.com",
-                        "--token-file",
-                        str(self.token),
                         task,
                     ]
                 )
@@ -825,42 +822,60 @@ class SubmitHelperTestCase(unittest.TestCase):
                 self.assertEqual(
                     self.value_after(argv, "--gres"), "bulk-dota-replays=1"
                 )
-                self.assertEqual(
-                    self.value_after(argv, "--secret"), "SWITCHBOARD_MODULE_TOKEN"
-                )
                 self.assertEqual(self.value_after(argv, "--base"), self.head)
                 self.assertEqual(self.value_after(argv, "--commit"), self.head)
                 self.assertEqual(self.value_after(argv, "--tree"), self.tree)
-                self.assertEqual(
-                    self.value_after(argv, "--demand-cores"),
-                    "1",
-                )
-                self.assertEqual(self.value_after(argv, "--demand-mem-mb"), "512")
                 self.assertEqual(self.value_after(argv, "--backstop"), backstop)
                 self.assertEqual(self.value_after(argv, "--quiet"), quiet)
                 self.assertRegex(self.head, r"^[0-9a-f]{40}$")
-                self.assertIn(str(self.token), argv)
-                self.assertNotIn("sba_test_token", "\n".join(argv))
+                self.assertNotIn("--token-file", argv)
 
-    def test_a_call_without_hub_or_token_exits_before_switchboard(self):
-        cases = [
-            ["--token-file", str(self.token), "update"],
-            ["--hub", "https://hub.example.com", "update"],
-        ]
-        for arguments in cases:
-            with self.subTest(arguments=arguments):
+    def test_the_argv_names_no_secret(self):
+        for task in ("update", "verify", "check"):
+            with self.subTest(task=task):
                 self.stub_log.unlink(missing_ok=True)
-                result = self.run_helper(arguments)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(self.stub_log.exists())
+                result = self.run_helper(["--hub", "https://hub.example.com", task])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("--secret", self.recorded_argv())
+
+    def test_the_argv_declares_no_cores_or_memory(self):
+        for task in ("update", "verify", "check"):
+            with self.subTest(task=task):
+                self.stub_log.unlink(missing_ok=True)
+                result = self.run_helper(["--hub", "https://hub.example.com", task])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                argv = self.recorded_argv()
+                self.assertNotIn("--demand-mem-mb", argv)
+                self.assertNotIn("--demand-cores", argv)
+
+    def test_a_call_with_only_hub_submits(self):
+        result = self.run_helper(["--hub", "https://hub.example.com", "update"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--token-file", self.recorded_argv())
+
+    def test_a_token_file_is_refused_before_switchboard(self):
+        token = self.root / "submit.token"
+        token.write_text("sba_test_token\n", encoding="utf-8")
+        result = self.run_helper(
+            ["--hub", "https://hub.example.com", "--token-file", str(token), "update"]
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse(self.stub_log.exists())
+
+    def test_a_call_without_hub_exits_before_switchboard(self):
+        result = self.run_helper(["update"])
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--hub is required", result.stderr)
+        self.assertFalse(self.stub_log.exists())
 
     def test_not_before_refuses_a_time_before_0500_pacific(self):
         result = self.run_helper(
             [
                 "--hub",
                 "https://hub.example.com",
-                "--token-file",
-                str(self.token),
                 "--not-before",
                 "05:00",
                 "update",
@@ -880,8 +895,6 @@ class SubmitHelperTestCase(unittest.TestCase):
             [
                 "--hub",
                 "https://hub.example.com",
-                "--token-file",
-                str(self.token),
                 "--not-before",
                 "05:00",
                 "update",
@@ -1418,11 +1431,21 @@ class TriggerTestCase(unittest.TestCase):
         self.assertEqual(plist["Label"], "dev.dota-replays.update")
         arguments = plist["ProgramArguments"]
         self.assertEqual(arguments[-1], "update")
+        self.assertNotIn("--token-file", arguments)
         self.assertEqual(arguments[arguments.index("--not-before") + 1], "05:00")
         self.assertEqual(
             plist["StartCalendarInterval"],
             [{"Weekday": 4, "Hour": 5, "Minute": 30}],
         )
+
+
+class PolicyExampleTestCase(unittest.TestCase):
+    def test_the_policy_example_lists_no_secrets(self):
+        text = POLICY_EXAMPLE.read_text(encoding="utf-8")
+
+        self.assertEqual(text.count("[[task]]"), 3)
+        self.assertIsNone(re.search(r"(?m)^\s*secrets\s*=", text))
+        self.assertIn('since = "bba4c5f57c8ce4ab71cfd1b5c8594fe69b74a3f6"', text)
 
 
 if __name__ == "__main__":
