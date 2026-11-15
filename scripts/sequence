@@ -1,0 +1,287 @@
+#!/bin/sh
+""":"
+# A shell preamble. It finds the interpreter and then hands this same file back
+# to it, so that a host with no Python 3.12 or newer refuses with a stated
+# reason instead of a shell error. Each candidate reports its version, and the
+# case below judges it; the Python body starts after the string that ends
+# below, and both languages read this section as one inert string.
+found=''
+seen=''
+for candidate in python3.13 python3; do
+    interpreter=$(command -v "$candidate" 2>/dev/null) || continue
+    [ -n "$interpreter" ] || continue
+    version=$("$interpreter" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null)
+    seen="$seen $candidate ${version:-unknown}"
+    case $version in
+        3.1[2-9].*|3.[2-9][0-9].*|[4-9].*|[1-9][0-9].*) found=$interpreter; break ;;
+    esac
+done
+if [ -z "$found" ]; then
+    printf 'scripts/sequence: no Python 3.12 or newer on PATH; found:%s\n' "${seen:- nothing}" >&2
+    exit 2
+fi
+exec "$found" "$0" "$@"
+":"""
+
+# Run the repository's test suite as one switchboard job step.
+#
+# Usage: scripts/sequence --run <dir> [--bound <s>]
+#
+# The interpreter is python3.13 from PATH when it is there, else python3 when
+# it reports 3.12 or newer, else nothing runs and the script exits 2 naming what
+# it found (the shell preamble above, which compares the reported version). The suite is `python -m unittest discover
+# -v --durations 3` from the repository root: `-v` gives the job's quiet limit
+# a line per case, and `--durations` names the slowest case.
+#
+# The run directory is created when it is missing and must be empty when it is
+# not. It holds `unittest.log` (the suite's merged output, also streamed to
+# this script's stdout) and `summary.txt`, written as each fact is known:
+#
+#   revision <sha> tree <sha>
+#   python <interpreter> <version>
+#   load <1 min> <5 min> <15 min>
+#   step unittest rc=<n> wall=<s>s cpu=<s>s ran=<N> failures=<f> errors=<e> skipped=<k> verdict=<line>
+#   slowest <s>s <test id>
+#   result PASS
+#
+# The last line is `result PASS`, `result FAIL unittest` or `result FAIL
+# timeout`; a run that is stopped has no `result` line, so it never reads as
+# green. The exit code is 0 exactly when the suite passed: the child exited 0,
+# the bound did not expire, the verdict is `OK...` and at least one test ran.
+# A refusal (an unknown or missing argument, a non-empty run directory or a
+# dirty checkout) exits 2 before any summary or record. A HUP, INT or TERM
+# settles the step through the helper and dies by the signal.
+#
+# The step and its progress records go to the hub through
+# scripts/lib/run_queue_progress.py, agent-workflow's version 1 copied byte for
+# byte; outside a job (RUN_QUEUE_PROGRESS unset) the helper writes nothing.
+
+import argparse
+import os
+import platform
+import re
+import resource
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+
+import run_queue_progress  # noqa: E402
+
+STEP = "unittest"
+BOUND = 570
+KILL_AFTER = 10
+SUITE = ("-m", "unittest", "discover", "-v", "--durations", "3")
+RAN = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
+VERDICT = re.compile(r"^(OK|FAILED)(?: \(([^)]*)\))?$")
+COUNTS = ("failures", "errors", "skipped")
+
+
+class Summary:
+    """The run's summary, written line by line as each fact is known."""
+
+    def __init__(self, path):
+        self.path = path
+        self.handle = path.open("w", encoding="utf-8")
+
+    def line(self, text):
+        self.handle.write(text + "\n")
+        self.handle.flush()
+
+    def close(self):
+        self.handle.close()
+
+
+def refuse(message):
+    """Say why this run will not start and exit 2."""
+    sys.stderr.write("scripts/sequence: %s\n" % message)
+    sys.exit(2)
+
+
+def git(*arguments):
+    """Run git in the repository and return its completed process."""
+    return subprocess.run(
+        ("git",) + arguments,
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+
+def parse_arguments(argv):
+    parser = argparse.ArgumentParser(
+        prog="scripts/sequence",
+        description="Run the repository's suite and write its summary.",
+    )
+    parser.add_argument("--run", required=True, metavar="DIR",
+                        help="the run directory to create or fill")
+    parser.add_argument("--bound", type=int, default=BOUND, metavar="SECS",
+                        help="seconds before the suite is stopped (default %d)" % BOUND)
+    options = parser.parse_args(argv)
+    if options.bound < 1:
+        parser.error("--bound must be a positive whole number of seconds: %s" % options.bound)
+    return options
+
+
+def suite_argv():
+    """Return the command that runs the suite under this interpreter."""
+    return [sys.executable] + list(SUITE)
+
+
+def expire(child, timed_out):
+    """Stop a suite that is still running at the bound."""
+    timed_out.set()
+    try:
+        child.terminate()
+    except ProcessLookupError:
+        return
+    killer = threading.Timer(KILL_AFTER, kill, args=(child,))
+    killer.daemon = True
+    killer.start()
+
+
+def kill(child):
+    """End a suite that ignored the bound's SIGTERM."""
+    try:
+        child.kill()
+    except ProcessLookupError:
+        pass
+
+
+def run_suite(log_path, bound, timed_out):
+    """Run the suite, stream its output, and return its exit status and wall time."""
+    started = time.monotonic()
+    with log_path.open("w", encoding="utf-8") as log:
+        child = subprocess.Popen(
+            suite_argv(),
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        )
+        timer = threading.Timer(bound, expire, args=(child, timed_out))
+        timer.daemon = True
+        timer.start()
+        try:
+            for line in child.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                log.write(line)
+                log.flush()
+            status = child.wait()
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+            timer.cancel()
+            child.stdout.close()
+    return status, time.monotonic() - started
+
+
+def parse_suite(text):
+    """Return the suite's case count, verdict, its counts and its slowest case."""
+    ran = 0
+    for match in RAN.finditer(text):
+        ran = int(match.group(1))
+    verdict = ""
+    counts = dict.fromkeys(COUNTS, 0)
+    for line in text.splitlines():
+        match = VERDICT.match(line.strip())
+        if not match:
+            continue
+        verdict = line.strip()
+        for token in (match.group(2) or "").split(","):
+            key, _, value = token.strip().partition("=")
+            if key in counts and value.isdigit():
+                counts[key] = int(value)
+    slowest = ""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != "Slowest test durations":
+            continue
+        for candidate in lines[index + 1:]:
+            stripped = candidate.strip()
+            if not stripped or set(stripped) == {"-"}:
+                continue
+            parts = stripped.split(None, 1)
+            slowest = "%s %s" % (parts[0], parts[1]) if len(parts) == 2 else stripped
+            break
+        break
+    return ran, verdict, counts, slowest
+
+
+def main(argv):
+    run_queue_progress.install()
+    options = parse_arguments(argv)
+    run_dir = Path(options.run)
+    if run_dir.exists() and not run_dir.is_dir():
+        refuse("--run is not a directory: %s" % run_dir)
+    if run_dir.exists() and any(run_dir.iterdir()):
+        refuse("--run directory is not empty: %s" % run_dir)
+    changes = git("status", "--porcelain", "--untracked-files=normal")
+    if changes.returncode != 0:
+        refuse("git status failed in %s: %s" % (ROOT, changes.stderr.strip()))
+    if changes.stdout.strip():
+        refuse("the checkout is not clean: %s" % changes.stdout.strip().splitlines()[0])
+    head = git("rev-parse", "HEAD").stdout.strip()
+    tree = git("rev-parse", "HEAD^{tree}").stdout.strip()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_path = (run_dir / "unittest.log").resolve()
+    summary = Summary(run_dir / "summary.txt")
+    try:
+        summary.line("revision %s tree %s" % (head, tree))
+        summary.line("python %s %s" % (sys.executable, platform.python_version()))
+        summary.line("load %s" % " ".join("%.2f" % value for value in os.getloadavg()))
+        run_queue_progress.plan(STEP)
+        run_queue_progress.record(STEP, "run", log=str(log_path))
+        timed_out = threading.Event()
+        status, wall = run_suite(log_path, options.bound, timed_out)
+        usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        cpu = usage.ru_utime + usage.ru_stime
+        ran, verdict, counts, slowest = parse_suite(log_path.read_text(encoding="utf-8"))
+        passed = not timed_out.is_set() and status == 0 and verdict.startswith("OK") and ran >= 1
+        summary.line(
+            "step %s rc=%d wall=%.1fs cpu=%.1fs ran=%d failures=%d errors=%d "
+            "skipped=%d verdict=%s"
+            % (STEP, status, wall, cpu, ran, counts["failures"], counts["errors"],
+               counts["skipped"], verdict)
+        )
+        if slowest:
+            summary.line("slowest %s" % slowest)
+        if passed:
+            last = "result PASS"
+            detail = "ran %d, failures %d, errors %d, skipped %d" % (
+                ran, counts["failures"], counts["errors"], counts["skipped"])
+        elif timed_out.is_set():
+            last = "result FAIL timeout"
+            detail = "timed out after %d s" % options.bound
+        else:
+            last = "result FAIL %s" % STEP
+            detail = "ran %d, failures %d, errors %d, skipped %d" % (
+                ran, counts["failures"], counts["errors"], counts["skipped"])
+        summary.line(last)
+        run_queue_progress.record(
+            STEP,
+            "ok" if passed else "fail",
+            secs=int(round(wall)),
+            done=ran,
+            total=ran,
+            failing=counts["failures"] + counts["errors"],
+            log=str(log_path),
+            detail=detail,
+        )
+        print(last)
+    finally:
+        summary.close()
+    return 0 if passed else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
