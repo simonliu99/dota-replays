@@ -89,9 +89,11 @@ that submits `update` every Thursday at 05:30 Pacific. launchd runs a time
 missed while the Mac slept at its next wake, and `--not-before 05:00` refuses a
 wake before 05:00, so that week's run waits for the following Thursday.
 
-1. Mint an `sba_` agent token for the Mac on the hub's Access page and save it to `~/.config/switchboard/dota-replays-submit.token`, mode `0600`.
-2. Edit the plist: `--hub` names the hub, and the token and script paths must
-   match the Mac.
+1. Approve the Mac's agent binding once, by running
+   `switchboard client request --agent --hub https://<hub> --wait` and approving
+   its code on the hub's Access page.
+2. Edit the plist: `--hub` names the hub, and the script path must match the
+   Mac.
 3. Install it:
 
    ```bash
@@ -103,7 +105,7 @@ Its output goes to `~/Library/Logs/dota-replays-update.log`. To submit a job by
 hand:
 
 ```bash
-scripts/switchboard-submit --hub https://<hub> --token-file ~/.config/switchboard/dota-replays-submit.token update
+scripts/switchboard-submit --hub https://<hub> update
 ```
 
 ## Catching up after a gap

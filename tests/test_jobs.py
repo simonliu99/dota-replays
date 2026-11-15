@@ -688,8 +688,6 @@ class SubmitHelperTestCase(unittest.TestCase):
         self.date_log = self.root / "date-calls.txt"
         self.gitconfig = self.root / "gitconfig"
         self.gitconfig.write_text("", encoding="utf-8")
-        self.token = self.root / "submit.token"
-        self.token.write_text("sba_test_token\n", encoding="utf-8")
         self.write_stub(
             "switchboard",
             "#!/bin/sh\n"
@@ -809,8 +807,6 @@ class SubmitHelperTestCase(unittest.TestCase):
                     [
                         "--hub",
                         "https://hub.example.com",
-                        "--token-file",
-                        str(self.token),
                         task,
                     ]
                 )
@@ -839,28 +835,36 @@ class SubmitHelperTestCase(unittest.TestCase):
                 self.assertEqual(self.value_after(argv, "--backstop"), backstop)
                 self.assertEqual(self.value_after(argv, "--quiet"), quiet)
                 self.assertRegex(self.head, r"^[0-9a-f]{40}$")
-                self.assertIn(str(self.token), argv)
-                self.assertNotIn("sba_test_token", "\n".join(argv))
+                self.assertNotIn("--token-file", argv)
 
-    def test_a_call_without_hub_or_token_exits_before_switchboard(self):
-        cases = [
-            ["--token-file", str(self.token), "update"],
-            ["--hub", "https://hub.example.com", "update"],
-        ]
-        for arguments in cases:
-            with self.subTest(arguments=arguments):
-                self.stub_log.unlink(missing_ok=True)
-                result = self.run_helper(arguments)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(self.stub_log.exists())
+    def test_a_call_with_only_hub_submits(self):
+        result = self.run_helper(["--hub", "https://hub.example.com", "update"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--token-file", self.recorded_argv())
+
+    def test_a_token_file_is_refused_before_switchboard(self):
+        token = self.root / "submit.token"
+        token.write_text("sba_test_token\n", encoding="utf-8")
+        result = self.run_helper(
+            ["--hub", "https://hub.example.com", "--token-file", str(token), "update"]
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse(self.stub_log.exists())
+
+    def test_a_call_without_hub_exits_before_switchboard(self):
+        result = self.run_helper(["update"])
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--hub is required", result.stderr)
+        self.assertFalse(self.stub_log.exists())
 
     def test_not_before_refuses_a_time_before_0500_pacific(self):
         result = self.run_helper(
             [
                 "--hub",
                 "https://hub.example.com",
-                "--token-file",
-                str(self.token),
                 "--not-before",
                 "05:00",
                 "update",
@@ -880,8 +884,6 @@ class SubmitHelperTestCase(unittest.TestCase):
             [
                 "--hub",
                 "https://hub.example.com",
-                "--token-file",
-                str(self.token),
                 "--not-before",
                 "05:00",
                 "update",
@@ -1418,6 +1420,7 @@ class TriggerTestCase(unittest.TestCase):
         self.assertEqual(plist["Label"], "dev.dota-replays.update")
         arguments = plist["ProgramArguments"]
         self.assertEqual(arguments[-1], "update")
+        self.assertNotIn("--token-file", arguments)
         self.assertEqual(arguments[arguments.index("--not-before") + 1], "05:00")
         self.assertEqual(
             plist["StartCalendarInterval"],
