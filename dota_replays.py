@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
+import replay_format
 from database import Database
 from opendota_client import OpenDotaClient
 
@@ -235,13 +236,19 @@ class DotaReplays:
                     # but for now we've triggered the parse
                     pass
 
-    def _download_replay(self, match_id: int, replay_url: str, filepath: Path) -> int:
-        """Download one replay to filepath and return the bytes written.
+    def _download_replay(
+        self, match_id: int, replay_url: str, replay_dir: Path
+    ) -> tuple[str, int]:
+        """Download one replay into replay_dir; return its name and bytes.
 
-        The body is written to <filename>.part and renamed only once the whole
-        body is written, so a failed download leaves no replay file behind.
+        The body is written to <url name>.part and renamed only once the whole
+        body is written and its first bytes name a stored format, so a failed
+        download leaves no replay file behind. The final name ends with the
+        suffix of the body's format, which need not be the URL's: Valve serves
+        zstd bodies at .dem.bz2 URLs.
         """
-        part_path = filepath.with_name(f"{filepath.name}.part")
+        url_name = replay_url.split("/")[-1]
+        part_path = replay_dir / f"{url_name}.part"
         started = time.monotonic()
         written = 0
         try:
@@ -249,6 +256,9 @@ class DotaReplays:
                 replay_url, headers={"User-Agent": "dota-replays/1.0"}
             )
             with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
+                encoding = response.headers.get("Content-Encoding")
+                if encoding is not None and encoding.strip().lower() != "identity":
+                    raise OSError(f"unexpected Content-Encoding: {encoding}")
                 expected_header = response.headers.get("Content-Length")
                 expected = (
                     int(expected_header)
@@ -264,16 +274,21 @@ class DotaReplays:
                         written += len(chunk)
             if expected is not None and expected != written:
                 raise OSError(f"incomplete download: {written} of {expected} bytes")
-            os.replace(part_path, filepath)
+            head = replay_format.read_head(part_path)
+            suffix = replay_format.suffix_for(head)
+            if suffix is None:
+                raise OSError(f"unknown replay format: {head.hex() or 'empty'}")
+            name = replay_format.replay_stem(url_name) + suffix
+            os.replace(part_path, replay_dir / name)
         except BaseException:
             part_path.unlink(missing_ok=True)
             raise
 
         logger.info(
-            f"Downloaded replay for match {match_id}: {written} bytes in "
+            f"Downloaded replay for match {match_id}: {written} bytes ({suffix}) in "
             f"{time.monotonic() - started:.1f}s"
         )
-        return written
+        return name, written
 
     def _download_replays(self, force_retry: bool = False) -> None:
         """Download replay files for matches with replay URLs."""
@@ -322,13 +337,21 @@ class DotaReplays:
             if not replay_url:
                 continue
 
-            filename = replay_url.split("/")[-1]
-            filepath = self.replay_dir / filename
+            url_name = replay_url.split("/")[-1]
+            # A replay is stored under the suffix of its format, so look for
+            # both names and prefer the current format when both exist.
+            stem = replay_format.replay_stem(url_name)
+            existing = None
+            for suffix in (".dem.zst", ".dem.bz2"):
+                candidate = self.replay_dir / (stem + suffix)
+                if candidate.exists():
+                    existing = candidate
+                    break
 
-            if filepath.exists():
+            if existing is not None:
                 # Already on disk, just record it
-                file_size = filepath.stat().st_size
-                self.db.record_download(match_id, filename, file_size)
+                file_size = existing.stat().st_size
+                self.db.record_download(match_id, existing.name, file_size)
                 self.db.clear_download_attempts(match_id)
                 logger.info(
                     f"Replay for match {match_id} already on disk: {file_size} bytes"
@@ -336,7 +359,9 @@ class DotaReplays:
                 continue
 
             try:
-                file_size = self._download_replay(match_id, replay_url, filepath)
+                filename, file_size = self._download_replay(
+                    match_id, replay_url, self.replay_dir
+                )
                 self.db.record_download(match_id, filename, file_size)
                 self.db.clear_download_attempts(match_id)
                 success += 1
@@ -389,8 +414,10 @@ class DotaReplays:
             logger.warning(f"Replay directory does not exist: {self.replay_dir}")
             return
 
-        # Get all .dem.bz2 files
-        replay_files = list(self.replay_dir.glob("*.dem.bz2"))
+        # Get the replay files of either stored format
+        replay_files = list(self.replay_dir.glob("*.dem.bz2")) + list(
+            self.replay_dir.glob("*.dem.zst")
+        )
         if not replay_files:
             logger.info(f"No replay files found in {self.replay_dir}")
             return
@@ -408,7 +435,7 @@ class DotaReplays:
         for m in matches_with_urls:
             if m["replay_url"]:
                 filename = m["replay_url"].split("/")[-1]
-                url_to_match[filename] = m["match_id"]
+                url_to_match[replay_format.replay_stem(filename)] = m["match_id"]
 
         matched = 0
         unmatched = 0
@@ -427,9 +454,9 @@ class DotaReplays:
             except (ValueError, IndexError):
                 pass
 
-            # Method 2: Fall back to URL matching
-            if match_id is None and filename in url_to_match:
-                match_id = url_to_match[filename]
+            # Method 2: Fall back to URL matching, whatever the file's format
+            if match_id is None and replay_format.replay_stem(filename) in url_to_match:
+                match_id = url_to_match[replay_format.replay_stem(filename)]
 
             if match_id:
                 file_size = filepath.stat().st_size
@@ -526,11 +553,10 @@ class DotaReplays:
                 continue
 
             replay_url = details["replay_url"]
-            filename = replay_url.split("/")[-1]
-            filepath = self.replay_dir / filename
-
             try:
-                file_size = self._download_replay(match_id, replay_url, filepath)
+                filename, file_size = self._download_replay(
+                    match_id, replay_url, self.replay_dir
+                )
                 self.db.record_download(match_id, filename, file_size)
                 success += 1
             except Exception as e:

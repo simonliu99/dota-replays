@@ -47,7 +47,11 @@ newest backup is more than 8 days old or more than one hour in the future, is
 corrupt, or holds more rows than the live database. `folder-check` exits 1 if
 the replay folder holds any entry at its top level that is neither a replay
 file matching the hub's pattern nor the `db-backups` directory (the hub serves
-any top-level file whose name matches its pattern). Until switchboard#274
+any top-level file whose name matches its pattern). A replay file is a name
+matching that pattern whose suffix is `.dem.bz2` or `.dem.zst`. `folder-check`
+reads the first four bytes of every replay and also exits 1, naming each such
+file, when the bytes are not the format its suffix claims: a `.dem.bz2` file
+holding zstd or the reverse. Until switchboard#274
 schedules `verify`, both checks run only when `verify` is submitted.
 
 Add the entries in `switchboard/policy.example.toml` to the worker's policy on
@@ -88,6 +92,57 @@ To restore from a backup by hand:
 ### Accepting a smaller database
 
 Accepting a smaller database (a restore from a backup older than the newest, a hand edit that removed rows, or a newest backup that fails its check): create `db-backups/held/` and move into it every backup the next `update` would refuse against, that is, each newer than the one you accept, or the one that fails its check. Never move a backup into the replay folder itself: its name matches the hub's pattern and the hub would serve it. A folder inside `db-backups` is never counted, pruned or served. The next `update` then backs up and prunes normally. Delete `held/` by hand when you no longer need it.
+
+## Repair 2026-11 replay names
+
+Downloads from 2026-11-10 to the fix saved zstd replay bodies under the replay
+URL's `.dem.bz2` name. `repair_replay_names.py` renames each such file in place,
+without rewriting its bytes, and updates the `downloads` row that names it. It
+never changes a bzip2 file, a `.part` file or a file of an unknown format. Run
+it as the worker's account, with no dota-replays job queued or running.
+
+On the node, as the worker's account, set the three values once and look at the database's `-wal` file:
+
+```bash
+REPO=                # the worker's dota-replays checkout, at a revision that has repair_replay_names.py
+SWITCHBOARD_BULK=    # the worker policy's SWITCHBOARD_BULK
+DOTA_REPLAY_DIR=     # the worker policy's DOTA_REPLAY_DIR
+if [ -f "$REPO/repair_replay_names.py" ] && [ -d "$SWITCHBOARD_BULK" ] && [ -d "$DOTA_REPLAY_DIR" ]; then ls -l "$SWITCHBOARD_BULK/dota_replays.db-wal"; else echo "set REPO, SWITCHBOARD_BULK and DOTA_REPLAY_DIR"; fi
+```
+
+A `-wal` file of 0 bytes, or none, is the normal state after a job: `publish.py` and `db_copy.py` open the database read-only, which leaves an empty `-wal` file, so the dry run's `wal file present: True` is expected. A `-wal` file larger than 0 bytes holds rows the dry run cannot read, because it opens the database immutable: stop and report it before the dry run.
+
+The dry run changes nothing and exits 1 while work remains:
+
+```bash
+python3 "$REPO/repair_replay_names.py" --db "$SWITCHBOARD_BULK/dota_replays.db" --replay-dir "$DOTA_REPLAY_DIR"
+```
+
+`N renames` is the number of files it will rename and `M row updates` the rows
+an interrupted earlier run left. `conflicts` counts a name whose `.dem.zst`
+file already exists, which it reports and never overwrites. A conflict needs a
+decision about which file to keep: stop and report it. `--apply` exits 1 while
+one remains.
+
+Apply it:
+
+```bash
+python3 "$REPO/repair_replay_names.py" --db "$SWITCHBOARD_BULK/dota_replays.db" --replay-dir "$DOTA_REPLAY_DIR" --apply
+```
+
+`--apply` first copies the database to
+`$SWITCHBOARD_BULK/dota_replays.db.before-repair-<UTC stamp>` beside it, and it
+stops without renaming anything unless the copy passes `PRAGMA integrity_check`.
+Then run the dry run again: it exits 0 and prints `dry run: 0 renames, 0 row
+updates, 0 conflicts` when nothing is left. Each `--apply` writes a new copy;
+the oldest `before-repair` copy is the one taken before the first rename. If
+`--apply` stops early, run it again before any job. After restoring a database
+backup taken before the repair, run the dry run and `--apply` again. `check`
+reports differences until the following `verify` publishes the new names.
+
+The hub schedule `dota-replays-update` stays removed until the repair ran.
+switchboard's `bulk-mount-check` checks its sample with `bzip2 -t`, so pick a
+`.dem.bz2` sample until switchboard accepts a zstd sample.
 
 ## Weekly trigger
 
