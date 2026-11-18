@@ -679,6 +679,61 @@ class PublishTestCase(unittest.TestCase):
             },
         )
 
+    def test_a_match_two_players_share_is_indexed_for_each(self):
+        now_s = PUBLISHED_MS // 1000
+        shared = {
+            "match_id": 8_634_563_001,
+            "start_time": now_s - 86_400,
+            "duration": 2_400,
+            "deaths": 2,
+            "assists": 3,
+            "radiant_win": True,
+        }
+        matches = [
+            dict(shared, player_id=PLAYER, hero_id=1, kills=5, player_slot=0),
+            dict(shared, player_id=OTHER_PLAYER, hero_id=2, kills=7, player_slot=128),
+        ]
+        details = [
+            (
+                shared["match_id"],
+                {"version": None, "replay_url": "http://replay.example/e.dem.bz2"},
+            ),
+        ]
+        seed_database(
+            self.path, [(PLAYER, "Arteezy"), (OTHER_PLAYER, "Other")], matches, details
+        )
+
+        code, log = self.run_main()
+
+        self.assertEqual(code, 0, log)
+        entries = {}
+        for player_id in (PLAYER, OTHER_PLAYER):
+            collection = self.hub.collection(f"matches.{player_id}")
+            self.assertEqual(len(collection), 1, player_id)
+            (month,) = collection.values()
+            entries[player_id] = [
+                (entry["match_id"], entry["hero_id"], entry["kills"], entry["win"])
+                for entry in month["matches"]
+            ]
+        self.assertEqual(
+            entries,
+            {
+                PLAYER: [(shared["match_id"], 1, 5, True)],
+                OTHER_PLAYER: [(shared["match_id"], 2, 7, False)],
+            },
+        )
+        disk = self.hub.document("meta", "disk")
+        self.assertEqual(
+            {entry["player_id"]: (entry["matches"], entry["wins"], entry["losses"])
+             for entry in disk["players"]},
+            {PLAYER: (1, 1, 0), OTHER_PLAYER: (1, 0, 1)},
+        )
+        self.assertEqual(disk["waiting"], 1)
+        summary = self.hub.document("meta", "summary")
+        self.assertEqual(
+            (summary["indexed_matches"], summary["total_matches"]), (2, 2)
+        )
+
     def test_a_match_past_21_days_is_not_waiting(self):
         now_s = PUBLISHED_MS // 1000
         matches = [

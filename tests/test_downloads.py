@@ -45,10 +45,10 @@ class ReplayDownloadTestCase(unittest.TestCase):
         target = self.target()
         return target.with_name(f"{target.name}.part")
 
-    def match_row(self, match_id: int) -> dict:
+    def match_row(self, match_id: int, age_days: int = 0) -> dict:
         return {
             "match_id": match_id,
-            "start_time": int(time.time()),
+            "start_time": int(time.time()) - age_days * 86400,
             "duration": 1200,
             "hero_id": 1,
             "kills": 0,
@@ -58,9 +58,9 @@ class ReplayDownloadTestCase(unittest.TestCase):
             "player_slot": 0,
         }
 
-    def seed(self, replay_url: str) -> None:
+    def seed(self, replay_url: str, age_days: int = 0) -> None:
         self.db.upsert_player(PLAYER_ID, "Test Player")
-        self.db.insert_matches(PLAYER_ID, [self.match_row(MATCH_ID)])
+        self.db.insert_matches(PLAYER_ID, [self.match_row(MATCH_ID, age_days)])
         self.db.upsert_match_details(
             MATCH_ID,
             {"match_id": MATCH_ID, "version": 21, "replay_url": replay_url},
@@ -116,6 +116,85 @@ class ReplayDownloadTestCase(unittest.TestCase):
             [row["file_size"] for row in self.db.get_downloads()], [len(BODY)]
         )
         self.assertEqual(len(server.requests), 2)
+        self.assertIsNone(self.db.get_download_attempt(MATCH_ID))
+
+    def test_a_match_older_than_21_days_is_not_requested(self):
+        server = ReplayServer(BODY)
+        self.addCleanup(server.close)
+        self.seed(f"{server.base_url}/570/{MATCH_ID}.dem.bz2", age_days=22)
+        app = self.app()
+
+        app._download_replays()
+
+        self.assertEqual(server.requests, [])
+        self.assertEqual(self.db.get_downloads(), [])
+        self.assertFalse(self.target().exists())
+
+    def test_two_failed_attempts_stop_the_download_until_a_forced_retry(self):
+        server = ReplayServer(BODY, status=503)
+        self.addCleanup(server.close)
+        self.seed(f"{server.base_url}/570/{MATCH_ID}.dem.bz2")
+        app = self.app()
+
+        app._download_replays()
+        app._download_replays()
+        self.assertEqual(len(server.requests), 2)
+        self.assertEqual(self.db.get_download_attempt(MATCH_ID)["attempt_count"], 2)
+
+        server.status = 200
+        app._download_replays()
+        self.assertEqual(len(server.requests), 2)
+        self.assertFalse(self.target().exists())
+
+        app._download_replays(force_retry=True)
+        self.assertEqual(len(server.requests), 3)
+        self.assertEqual(self.target().read_bytes(), BODY)
+
+    def test_an_odd_replay_url_records_no_download(self):
+        for url_end in ("570/", "570/.."):
+            with self.subTest(url_end=url_end):
+                server = ReplayServer(BODY)
+                self.addCleanup(server.close)
+                self.seed(f"{server.base_url}/{url_end}")
+                app = self.app()
+
+                app._download_replays()
+
+                self.assertEqual(self.db.get_downloads(), [])
+                self.assertEqual(server.requests, [])
+                attempt = self.db.get_download_attempt(MATCH_ID)
+                self.assertIn("unexpected replay URL name", attempt["last_error"])
+                self.db.clear_download_attempts(MATCH_ID)
+
+    def test_verify_marks_a_missing_or_wrong_sized_replay_off_disk(self):
+        server = ReplayServer(BODY)
+        self.addCleanup(server.close)
+        self.seed(f"{server.base_url}/570/{MATCH_ID}.dem.bz2")
+        other = MATCH_ID + 1
+        self.db.insert_matches(PLAYER_ID, [self.match_row(other)])
+        app = self.app()
+        self.target().write_bytes(BODY)
+        for match_id in (MATCH_ID, other):
+            self.db.record_download(match_id, f"{match_id}.dem.bz2", len(BODY))
+
+        app.verify_downloads()
+
+        self.assertEqual(
+            {row["match_id"]: row["on_disk"] for row in self.db.get_downloads()},
+            {MATCH_ID: 1, other: 0},
+        )
+
+        for label, body in (("truncated", BODY[:1000]), ("empty", b"")):
+            with self.subTest(label=label):
+                self.target().write_bytes(body)
+
+                app.verify_downloads()
+
+                self.assertEqual(
+                    {row["match_id"]: row["on_disk"] for row in self.db.get_downloads()},
+                    {MATCH_ID: 0, other: 0},
+                )
+        self.assertEqual(server.requests, [])
 
     def test_redownload_writes_a_part_file_before_renaming(self):
         server = ReplayServer(BODY, truncate_first=True)
@@ -220,6 +299,23 @@ class ReplayDownloadTestCase(unittest.TestCase):
         self.assertEqual(
             [(row["filename"], row["file_size"]) for row in self.db.get_downloads()],
             [(f"{MATCH_ID}.dem.zst", len(body))],
+        )
+
+    def test_a_dem_bz2_already_on_disk_is_recorded_without_a_request(self):
+        server = ReplayServer(BODY)
+        self.addCleanup(server.close)
+        self.seed(f"{server.base_url}/570/{MATCH_ID}.dem.bz2")
+        app = self.app()
+        body = BZIP2_MAGIC + b"already here"
+        self.target().write_bytes(body)
+
+        app._download_replays()
+
+        self.assertEqual(server.requests, [])
+        self.assertEqual(self.target().read_bytes(), body)
+        self.assertEqual(
+            [(row["filename"], row["file_size"]) for row in self.db.get_downloads()],
+            [(f"{MATCH_ID}.dem.bz2", len(body))],
         )
 
     def test_scan_registers_dem_zst_files(self):

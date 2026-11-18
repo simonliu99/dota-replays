@@ -3,6 +3,7 @@
 import sqlite3
 import json
 import logging
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Any
@@ -22,7 +23,7 @@ class Database:
         self._create_tables()
 
     # Current schema version - increment when adding migrations
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def _create_tables(self) -> None:
         """Create/migrate database tables."""
@@ -60,6 +61,7 @@ class Database:
         migrations = {
             1: self._migrate_v1,  # Initial schema
             2: self._migrate_v2,  # Add download_attempts table
+            3: self._migrate_v3,  # Key matches on (match_id, player_id)
         }
         
         for version in range(from_version + 1, self.SCHEMA_VERSION + 1):
@@ -137,6 +139,47 @@ class Database:
             );
         """)
 
+    def _migrate_v3(self) -> None:
+        """Key matches on (match_id, player_id), one row per tracked player.
+
+        A match two tracked players share needs a row for each, since the hero,
+        score and slot are the player's. The rebuild keeps every row. It runs
+        in one transaction with the version row _run_migrations then adds, so
+        an interrupted migration leaves the v2 table in place.
+
+        The child tables keep `REFERENCES matches(match_id)`, which no longer
+        names a unique key: no connection enables `PRAGMA foreign_keys`, and
+        enabling it makes every insert into them, and every delete, fail with
+        `foreign key mismatch`.
+        """
+        self.conn.execute("BEGIN")
+        self.conn.execute("""
+            CREATE TABLE matches_v3 (
+                match_id INTEGER NOT NULL,
+                player_id INTEGER NOT NULL,
+                start_time INTEGER NOT NULL,
+                duration INTEGER,
+                hero_id INTEGER,
+                kills INTEGER,
+                deaths INTEGER,
+                assists INTEGER,
+                radiant_win BOOLEAN,
+                player_slot INTEGER,
+                PRIMARY KEY (match_id, player_id),
+                FOREIGN KEY (player_id) REFERENCES players(player_id)
+            )
+        """)
+        self.conn.execute("""
+            INSERT INTO matches_v3
+            (match_id, player_id, start_time, duration, hero_id, kills, deaths, assists, radiant_win, player_slot)
+            SELECT match_id, player_id, start_time, duration, hero_id, kills, deaths, assists, radiant_win, player_slot
+            FROM matches
+        """)
+        self.conn.execute("DROP TABLE matches")
+        self.conn.execute("ALTER TABLE matches_v3 RENAME TO matches")
+        self.conn.execute("CREATE INDEX idx_matches_player_id ON matches(player_id)")
+        self.conn.execute("CREATE INDEX idx_matches_start_time ON matches(start_time)")
+
     def close(self) -> None:
         """Close the database connection."""
         self.conn.close()
@@ -170,12 +213,17 @@ class Database:
         return {row[0] for row in cursor.fetchall()}
 
     def insert_matches(self, player_id: int, matches: list[dict]) -> int:
-        """Insert matches, returns count of new matches inserted."""
+        """Insert a player's matches; return how many rows were new.
+
+        A match another tracked player already holds is stored again for this
+        player, since its row carries the player's hero, score and slot.
+        """
         existing = self.get_match_ids_for_player(player_id)
         new_matches = [m for m in matches if m["match_id"] not in existing]
-        
+
+        inserted = 0
         for match in new_matches:
-            self.conn.execute("""
+            cursor = self.conn.execute("""
                 INSERT OR IGNORE INTO matches 
                 (match_id, player_id, start_time, duration, hero_id, kills, deaths, assists, radiant_win, player_slot)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -191,8 +239,9 @@ class Database:
                 match.get("radiant_win"),
                 match.get("player_slot"),
             ))
+            inserted += cursor.rowcount
         self.conn.commit()
-        return len(new_matches)
+        return inserted
 
     def get_matches_without_details(self, player_id: int | None = None, limit: int | None = None) -> list[dict]:
         """Get matches that don't have cached details."""
@@ -259,7 +308,7 @@ class Database:
         if downloaded:
             # Include downloaded
             query = """
-                SELECT md.match_id, md.replay_url, m.start_time 
+                SELECT DISTINCT md.match_id, md.replay_url, m.start_time
                 FROM match_details md
                 JOIN matches m ON md.match_id = m.match_id
                 WHERE md.replay_url IS NOT NULL
@@ -267,7 +316,7 @@ class Database:
         else:
             # Exclude already downloaded
             query = """
-                SELECT md.match_id, md.replay_url, m.start_time 
+                SELECT DISTINCT md.match_id, md.replay_url, m.start_time
                 FROM match_details md
                 JOIN matches m ON md.match_id = m.match_id
                 LEFT JOIN downloads d ON md.match_id = d.match_id
@@ -330,28 +379,16 @@ class Database:
         row = cursor.fetchone()
         return dict(row) if row else None
 
-    def should_retry_download(self, match_id: int, match_start_time: int, max_age_days: int = 21) -> bool:
-        """
-        Check if a download should be retried.
-        
-        Rules:
-        - If match is older than max_age_days: max 1 attempt
-        - If match is newer: max 2 attempts
-        """
-        from datetime import datetime, timedelta
-        
-        match_date = datetime.fromtimestamp(match_start_time)
-        age = datetime.now() - match_date
-        is_old = age > timedelta(days=max_age_days)
-        
+    # A replay download is tried at most this many times; the download skips
+    # matches older than 21 days before it asks.
+    MAX_DOWNLOAD_ATTEMPTS = 2
+
+    def should_retry_download(self, match_id: int) -> bool:
+        """Return whether a replay download has attempts left."""
         attempt = self.get_download_attempt(match_id)
         if not attempt:
             return True  # Never tried
-        
-        attempt_count = attempt["attempt_count"]
-        max_attempts = 1 if is_old else 2
-        
-        return attempt_count < max_attempts
+        return attempt["attempt_count"] < self.MAX_DOWNLOAD_ATTEMPTS
 
     def clear_download_attempts(self, match_id: int) -> None:
         """Clear download attempts for a match (after successful download)."""
@@ -400,8 +437,8 @@ class Database:
         cursor = self.conn.execute("SELECT COUNT(*) FROM players")
         stats["players"] = cursor.fetchone()[0]
         
-        # Match counts
-        cursor = self.conn.execute("SELECT COUNT(*) FROM matches")
+        # Match counts: a match two tracked players share counts once
+        cursor = self.conn.execute("SELECT COUNT(DISTINCT match_id) FROM matches")
         stats["matches_total"] = cursor.fetchone()[0]
         
         # Match details
@@ -426,7 +463,7 @@ class Database:
         
         # Matches without details
         cursor = self.conn.execute("""
-            SELECT COUNT(*) FROM matches m
+            SELECT COUNT(DISTINCT m.match_id) FROM matches m
             LEFT JOIN match_details md ON m.match_id = md.match_id
             WHERE md.match_id IS NULL
         """)
@@ -447,19 +484,21 @@ class Database:
         return [dict(row) for row in cursor.fetchall()]
 
     def get_unparsed_matches(self, limit: int | None = None, max_age_days: int = 21) -> list[dict]:
-        """Get matches where is_parsed is False and result is not too old."""
-        from datetime import datetime, timedelta
-        cutoff = datetime.now() - timedelta(days=max_age_days)
-        
+        """Get matches where is_parsed is False and result is not too old.
+
+        The cutoff compares Unix seconds, so it is the same in every time zone.
+        """
+        cutoff = int(time.time()) - max_age_days * 86400
+
         query = """
-            SELECT m.match_id, m.start_time 
+            SELECT DISTINCT m.match_id, m.start_time
             FROM matches m
             JOIN match_details md ON m.match_id = md.match_id
             WHERE md.is_parsed = 0
-            AND datetime(m.start_time, 'unixepoch') > ?
+            AND m.start_time > ?
             ORDER BY m.start_time DESC
         """
-        params = [cutoff.strftime('%Y-%m-%d %H:%M:%S')]
+        params = [cutoff]
         
         if limit:
             query += " LIMIT ?"
