@@ -32,11 +32,11 @@ def profile(player_id: int) -> dict:
     return {"profile": {"account_id": player_id, "personaname": f"Player {player_id}"}}
 
 
-def match(match_id: int) -> dict:
+def match(match_id: int, age_days: int = 0) -> dict:
     """Return a match list entry shaped as OpenDota's."""
     return {
         "match_id": match_id,
-        "start_time": int(time.time()),
+        "start_time": int(time.time()) - age_days * 86400,
         "duration": 1200,
         "hero_id": 1,
         "kills": 0,
@@ -292,6 +292,107 @@ class ExitCodeTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Downloaded 0 replays, 1 failed", "\n".join(output))
         self.assertEqual(len(server.requests), 1)
+
+    def test_two_players_spend_one_download_attempt_per_run(self):
+        server = ReplayServer(b"", status=503)
+        self.addCleanup(server.close)
+        self.seed_players([PLAYER_A, PLAYER_B])
+        replay_url = f"{server.base_url}/570/{MATCH_IDS[0]}.dem.bz2"
+        client = FakeClient(
+            players={PLAYER_A: profile(PLAYER_A), PLAYER_B: profile(PLAYER_B)},
+            matches={
+                PLAYER_A: [match(MATCH_IDS[0])],
+                PLAYER_B: [match(MATCH_IDS[1])],
+            },
+            details={
+                MATCH_IDS[0]: {
+                    "match_id": MATCH_IDS[0],
+                    "version": 21,
+                    "replay_url": replay_url,
+                },
+                MATCH_IDS[1]: {"match_id": MATCH_IDS[1], "version": 21},
+            },
+        )
+
+        code, _ = self.run_main(client=client)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(server.requests), 1)
+        attempt = self.database().get_download_attempt(MATCH_IDS[0])
+        self.assertEqual(attempt["attempt_count"], 1)
+
+        server.status = 200
+        server.body = b"BZh" + b"a replay body"
+        code, _ = self.run_main(client=client)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(server.requests), 2)
+        self.assertEqual(
+            (self.replay_dir / f"{MATCH_IDS[0]}.dem.bz2").read_bytes(), server.body
+        )
+
+    def test_force_retry_downloads_a_replay_whose_attempts_ran_out(self):
+        server = ReplayServer(b"BZh" + b"a replay body")
+        self.addCleanup(server.close)
+        db = self.seed_players([PLAYER_A])
+        db.insert_matches(PLAYER_A, [match(MATCH_IDS[0])])
+        db.upsert_match_details(
+            MATCH_IDS[0],
+            {
+                "match_id": MATCH_IDS[0],
+                "version": 21,
+                "replay_url": f"{server.base_url}/570/{MATCH_IDS[0]}.dem.bz2",
+            },
+        )
+        db.record_download_attempt(MATCH_IDS[0], "503 Service Unavailable")
+        db.record_download_attempt(MATCH_IDS[0], "503 Service Unavailable")
+        client = FakeClient(
+            players={PLAYER_A: profile(PLAYER_A)},
+            matches={PLAYER_A: [match(MATCH_IDS[0])]},
+        )
+
+        code, _ = self.run_main(client=client)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(server.requests, [])
+
+        code, _ = self.run_main("--force-retry", client=client)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(server.requests), 1)
+        self.assertEqual(
+            (self.replay_dir / f"{MATCH_IDS[0]}.dem.bz2").read_bytes(), server.body
+        )
+
+    def test_force_refresh_fetches_stored_details_again(self):
+        db = self.seed_players([PLAYER_A])
+        db.insert_matches(PLAYER_A, [match(MATCH_IDS[0])])
+        db.upsert_match_details(MATCH_IDS[0], {"match_id": MATCH_IDS[0], "version": 21})
+        client = FakeClient(
+            players={PLAYER_A: profile(PLAYER_A)},
+            matches={PLAYER_A: [match(MATCH_IDS[0])]},
+            details={MATCH_IDS[0]: {"match_id": MATCH_IDS[0], "version": 22}},
+        )
+
+        code, _ = self.run_main("--force-refresh", "-n", "1", client=client)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(client.detail_calls, [MATCH_IDS[0]])
+        self.assertEqual(db.get_match_details(MATCH_IDS[0])["version"], 22)
+
+    def test_an_unparsed_match_older_than_21_days_requests_no_parse(self):
+        db = self.seed_players([PLAYER_A])
+        client = FakeClient(
+            players={PLAYER_A: profile(PLAYER_A)},
+            matches={PLAYER_A: [match(EXPIRED_MATCH, age_days=22)]},
+            details={EXPIRED_MATCH: {"match_id": EXPIRED_MATCH}},
+        )
+
+        code, _ = self.run_main(client=client)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(client.parse_calls, [])
+        self.assertEqual(db.get_match_details(EXPIRED_MATCH), {"match_id": EXPIRED_MATCH})
 
     def test_a_body_cut_short_counts_a_failure_and_both_players_are_fetched(self):
         server, player_id = self.recorded()

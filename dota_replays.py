@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
+import publish
 import replay_format
 from database import Database
 from opendota_client import OpenDotaClient
@@ -55,6 +56,21 @@ def _progress(items: list, description: str):
         if position % PROGRESS_INTERVAL == 0 or position == total:
             logger.info(f"{description}: {position}/{total}")
         yield item
+
+
+def _replay_url_name(replay_url: str) -> str:
+    """Return the file name a replay URL ends with, or raise ValueError.
+
+    The name must be one the hub serves and end in a stored format's suffix,
+    so an odd URL such as `.../570/` or `.../570/..` names no replay file.
+    """
+    name = replay_url.split("/")[-1]
+    if (
+        not publish.BULK_FILE_PATTERN.fullmatch(name)
+        or replay_format.replay_suffix(name) is None
+    ):
+        raise ValueError(f"unexpected replay URL name: {name!r}")
+    return name
 
 
 def _describe_download_error(error: Exception) -> str:
@@ -160,11 +176,9 @@ class DotaReplays:
         new_count = self.db.insert_matches(player_id, matches)
         logger.info(f"Found {len(matches)} matches, {new_count} new")
 
-        # Get details for matches without cache
+        # Get details for matches without cache. main() downloads the replays
+        # once after every player is updated, so one run tries each replay once.
         self._fetch_match_details(player_id, limit)
-
-        # Download replays
-        self._download_replays(force_retry=self.force_retry)
 
         return PlayerUpdate(player_fetched=True, matches_fetched=True)
 
@@ -247,7 +261,7 @@ class DotaReplays:
         suffix of the body's format, which need not be the URL's: Valve serves
         zstd bodies at .dem.bz2 URLs.
         """
-        url_name = replay_url.split("/")[-1]
+        url_name = _replay_url_name(replay_url)
         part_path = replay_dir / f"{url_name}.part"
         started = time.monotonic()
         written = 0
@@ -313,7 +327,7 @@ class DotaReplays:
                 skipped += 1
                 continue
             
-            if force_retry or self.db.should_retry_download(match_id, start_time):
+            if force_retry or self.db.should_retry_download(match_id):
                 eligible.append(match)
             else:
                 skipped += 1
@@ -337,7 +351,13 @@ class DotaReplays:
             if not replay_url:
                 continue
 
-            url_name = replay_url.split("/")[-1]
+            try:
+                url_name = _replay_url_name(replay_url)
+            except ValueError as error:
+                errors.append((match_id, str(error)))
+                self.db.record_download_attempt(match_id, str(error)[:200])
+                failed += 1
+                continue
             # A replay is stored under the suffix of its format, so look for
             # both names and prefer the current format when both exist.
             stem = replay_format.replay_stem(url_name)
@@ -380,7 +400,11 @@ class DotaReplays:
                 logger.warning(f"  Match {match_id}: {error}")
 
     def verify_downloads(self, redownload: bool = False) -> None:
-        """Verify all downloads exist on disk."""
+        """Verify all downloads exist on disk.
+
+        A replay is on disk when its file exists and, where the database
+        recorded a size, has that size; a truncated or empty file is missing.
+        """
         downloads = self.db.get_downloads()
         if not downloads:
             logger.info("No downloads to verify")
@@ -394,7 +418,10 @@ class DotaReplays:
             filename = dl["filename"]
             filepath = self.replay_dir / filename
 
-            if filepath.exists():
+            recorded_size = dl["file_size"]
+            if filepath.is_file() and (
+                recorded_size is None or filepath.stat().st_size == recorded_size
+            ):
                 self.db.update_on_disk_status(match_id, True)
             else:
                 self.db.update_on_disk_status(match_id, False)
@@ -707,6 +734,7 @@ def main() -> None:
         elif args.player_id:
             # Update specific player
             updates.append(app.update_player(args.player_id, limit=args.limit))
+            app._download_replays(force_retry=app.force_retry)
         else:
             # Update all tracked players
             players = db.get_all_players()
@@ -718,6 +746,7 @@ def main() -> None:
             logger.info(f"Updating {len(players)} tracked players...")
             for player in players:
                 updates.append(app.update_player(player["player_id"], limit=args.limit))
+            app._download_replays(force_retry=app.force_retry)
 
     finally:
         db.close()

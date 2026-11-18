@@ -65,9 +65,6 @@ class FakeOpenDotaTestCase(unittest.TestCase):
             replay_dir=Path(self.temp.name) / "replays",
             wait_for_parse=False,
         )
-        # The recorded details carry the real Valve replay URL; the download
-        # paths are tested against a local fake instead.
-        app._download_replays = lambda force_retry=False: None
         run_dir = Path(self.temp.name) / "run"
         run_dir.mkdir()
 

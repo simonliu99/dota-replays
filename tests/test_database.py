@@ -66,6 +66,20 @@ class DatabaseTestCase(unittest.TestCase):
         for match_id in ages:
             db.upsert_match_details(match_id, {"match_id": match_id})
 
+    def test_new_details_replace_the_stored_replay_url(self):
+        db = self.database()
+        db.upsert_player(PLAYER_ID, "Test Player")
+        db.insert_matches(PLAYER_ID, [match_row(7, int(time.time()))])
+        db.upsert_match_details(7, {"match_id": 7, "version": 21})
+        db.upsert_match_details(
+            7, {"match_id": 7, "version": 21, "replay_url": "http://replay.invalid/570/7_1.dem.bz2"}
+        )
+
+        self.assertEqual(
+            [row["replay_url"] for row in db.get_matches_with_replay_url()],
+            ["http://replay.invalid/570/7_1.dem.bz2"],
+        )
+
     def test_the_recheck_keeps_matches_of_the_last_21_days(self):
         db = self.database()
         self.seed_unparsed(db, {20: 20 * DAY, 22: 22 * DAY})

@@ -331,28 +331,16 @@ class Database:
         row = cursor.fetchone()
         return dict(row) if row else None
 
-    def should_retry_download(self, match_id: int, match_start_time: int, max_age_days: int = 21) -> bool:
-        """
-        Check if a download should be retried.
-        
-        Rules:
-        - If match is older than max_age_days: max 1 attempt
-        - If match is newer: max 2 attempts
-        """
-        from datetime import datetime, timedelta
-        
-        match_date = datetime.fromtimestamp(match_start_time)
-        age = datetime.now() - match_date
-        is_old = age > timedelta(days=max_age_days)
-        
+    # A replay download is tried at most this many times; the download skips
+    # matches older than 21 days before it asks.
+    MAX_DOWNLOAD_ATTEMPTS = 2
+
+    def should_retry_download(self, match_id: int) -> bool:
+        """Return whether a replay download has attempts left."""
         attempt = self.get_download_attempt(match_id)
         if not attempt:
             return True  # Never tried
-        
-        attempt_count = attempt["attempt_count"]
-        max_attempts = 1 if is_old else 2
-        
-        return attempt_count < max_attempts
+        return attempt["attempt_count"] < self.MAX_DOWNLOAD_ATTEMPTS
 
     def clear_download_attempts(self, match_id: int) -> None:
         """Clear download attempts for a match (after successful download)."""
