@@ -1028,7 +1028,6 @@ class FakeHubRulesTestCase(unittest.TestCase):
 
         status, body = self.raw("GET", "/api/m/dota-replays/docs/y%zz1")
         self.assertEqual(status, 400)
-        self.assertIn(b"not validly escaped", body)
 
     def test_a_body_over_the_limit_as_sent_answers_413(self):
         value = b'{"x": "a"}' + b" " * publish.MAX_VALUE

@@ -6,7 +6,9 @@ per module counted as collection, key and value bytes, and a list in key order
 answering `next_after`. It follows the hub's code at switchboard `e4fd19fc`:
 
 - `internal/httpapi/docs.go` `pathParam` decodes each path segment once, so an
-  escaped name such as `y%3A1` names the same document as `y:1`;
+  escaped name such as `y%3A1` names the same document as `y:1`; Go's `net/http`
+  refuses a `%` not followed by two hex digits with a plain 400 before the hub's
+  handler runs, and the fake answers that 400 with an `invalid` body;
 - `putDoc` refuses a body over 256 KiB as sent, before it is parsed;
 - `moduledocs.normalizeValue` stores the body compacted, its keys, numbers and
   escapes as sent, and refuses anything but one JSON object (NaN included);
@@ -16,6 +18,10 @@ answering `next_after`. It follows the hub's code at switchboard `e4fd19fc`:
 Its error bodies are shaped as the hub's `fail` writes them:
 `{"code": …, "detail": …}`, the detail left out when it is empty. A route the
 hub does not hold answers 404 here; publish.py sends none.
+
+A segment whose escapes Go would write the same way, such as `%2541`, reaches
+`pathParam` already decoded and is decoded twice by the hub; the fake decodes it
+once, and publish.py sends no `%` in a path.
 """
 
 import json
@@ -31,7 +37,7 @@ MAX_NAME = 128
 MAX_LIST_LIMIT = 200
 DEFAULT_LIST_LIMIT = 100
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+$")
-# A % not followed by two hex digits, which Go's url.PathUnescape refuses.
+# A % not followed by two hex digits, which Go's net/http refuses with 400.
 BAD_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
