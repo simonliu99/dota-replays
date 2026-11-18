@@ -33,6 +33,7 @@ HUB_TOKEN = "sbm_test_token"
 PLAYER_ID = 86745912
 MATCH_ID = 8554321
 REPLAY_NAME = f"{MATCH_ID}.dem.bz2"
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
 def run(command, cwd, env, merge=False, timeout=120):
@@ -263,7 +264,7 @@ class JobEntryTestCase(unittest.TestCase):
         match_id = fixture["match_ids"][0]
         opendota = RecordedOpenDota(FIXTURE_PATH)
         self.addCleanup(opendota.close)
-        replay_server = ReplayServer(b"a replay body")
+        replay_server = ReplayServer(b"BZha replay body")
         self.addCleanup(replay_server.close)
         opendota.responses[f"/api/matches/{match_id}"]["replay_url"] = (
             f"{replay_server.base_url}/570/{match_id}.dem.bz2"
@@ -351,7 +352,7 @@ class JobEntryTestCase(unittest.TestCase):
             database.record_download(MATCH_ID, REPLAY_NAME, 3)
         finally:
             database.close()
-        (self.replays / REPLAY_NAME).write_bytes(b"abc")
+        (self.replays / REPLAY_NAME).write_bytes(b"BZh")
         self.seed_backup(
             datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
             players=1,
@@ -447,7 +448,7 @@ class JobEntryTestCase(unittest.TestCase):
             database.record_download(123456, "123_456.dem.bz2", 100)
         finally:
             database.close()
-        (self.replays / "123_456.dem.bz2").write_bytes(b"replay data")
+        (self.replays / "123_456.dem.bz2").write_bytes(b"BZhreplay data")
         fresh_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.seed_backup(fresh_stamp, players=1, matches=0)
 
@@ -524,8 +525,8 @@ class JobEntryTestCase(unittest.TestCase):
             database.record_download(123456, "123_456.dem.bz2", 100)
         finally:
             database.close()
-        (self.replays / "123_456.dem.bz2").write_bytes(b"replay 1")
-        (self.replays / "123_458.dem.bz2").write_bytes(b"replay 2")
+        (self.replays / "123_456.dem.bz2").write_bytes(b"BZhreplay 1")
+        (self.replays / "123_458.dem.bz2").write_bytes(b"BZhreplay 2")
         fresh_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.seed_backup(fresh_stamp, players=1, matches=0)
         (self.replays / "db-backups" / "held").mkdir()
@@ -552,6 +553,73 @@ class JobEntryTestCase(unittest.TestCase):
         }
         self.assertEqual(files_before, files_after)
 
+    def test_verify_fails_on_a_replay_whose_bytes_do_not_match_its_name(self):
+        database = Database(str(self.bulk / "dota_replays.db"))
+        try:
+            database.upsert_player(1, "Test Player")
+            database.record_download(123456, "123_456.dem.bz2", 100)
+        finally:
+            database.close()
+        (self.replays / "123_456.dem.bz2").write_bytes(ZSTD_MAGIC + b"body")
+        fresh_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.seed_backup(fresh_stamp, players=1, matches=0)
+
+        result = self.run_entry(VERIFY_ENTRY, merge=True)
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("folder-check exited 1", result.stdout)
+        self.assertIn(
+            "Replay whose bytes do not match its name: '123_456.dem.bz2' (zstd)",
+            result.stdout,
+        )
+        self.assertIn("Replays whose bytes do not match their names: 1", result.stdout)
+
+    def test_verify_passes_dem_zst_replays(self):
+        database = Database(str(self.bulk / "dota_replays.db"))
+        try:
+            database.upsert_player(1, "Test Player")
+            database.record_download(123456, "123_456.dem.bz2", 100)
+            database.record_download(123457, "123_457.dem.zst", 100)
+        finally:
+            database.close()
+        (self.replays / "123_456.dem.bz2").write_bytes(b"BZhreplay 1")
+        (self.replays / "123_457.dem.zst").write_bytes(ZSTD_MAGIC + b"replay 2")
+        fresh_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.seed_backup(fresh_stamp, players=1, matches=0)
+
+        result = self.run_entry(VERIFY_ENTRY, merge=True)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("folder-check exited 0", result.stdout)
+        self.assertIn("holds 2 replay files and db-backups", result.stdout)
+
+    def test_verify_fails_on_a_dem_zst_holding_bzip2_and_on_an_empty_replay(self):
+        database = Database(str(self.bulk / "dota_replays.db"))
+        try:
+            database.upsert_player(1, "Test Player")
+            database.record_download(123456, "123_456.dem.zst", 100)
+            database.record_download(123457, "123_457.dem.bz2", 0)
+        finally:
+            database.close()
+        (self.replays / "123_456.dem.zst").write_bytes(b"BZhreplay 1")
+        (self.replays / "123_457.dem.bz2").write_bytes(b"")
+        fresh_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.seed_backup(fresh_stamp, players=1, matches=0)
+
+        result = self.run_entry(VERIFY_ENTRY, merge=True)
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("folder-check exited 1", result.stdout)
+        self.assertIn(
+            "Replay whose bytes do not match its name: '123_456.dem.zst' (bzip2)",
+            result.stdout,
+        )
+        self.assertIn(
+            "Replay whose bytes do not match its name: '123_457.dem.bz2' (unknown empty)",
+            result.stdout,
+        )
+        self.assertIn("Replays whose bytes do not match their names: 2", result.stdout)
+
     def test_a_db_backups_symlink_is_a_stray(self):
         database = Database(str(self.bulk / "dota_replays.db"))
         try:
@@ -559,7 +627,7 @@ class JobEntryTestCase(unittest.TestCase):
             database.record_download(123456, "123_456.dem.bz2", 100)
         finally:
             database.close()
-        (self.replays / "123_456.dem.bz2").write_bytes(b"replay 1")
+        (self.replays / "123_456.dem.bz2").write_bytes(b"BZhreplay 1")
 
         outside_dir = self.root / "outside_backups"
         outside_dir.mkdir()
@@ -608,7 +676,7 @@ class JobEntryTestCase(unittest.TestCase):
             database.record_download(123456, "123_456.dem.bz2", 100)
         finally:
             database.close()
-        (self.replays / "123_456.dem.bz2").write_bytes(b"replay 1")
+        (self.replays / "123_456.dem.bz2").write_bytes(b"BZhreplay 1")
         fresh_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.seed_backup(fresh_stamp, players=1, matches=0)
 
