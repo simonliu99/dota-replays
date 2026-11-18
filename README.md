@@ -36,8 +36,8 @@ lists every option, such as `-n` to limit a run to the newest matches and
 
 The database defaults to `./dota_replays.db` and replays to `./replays`. Set
 `DB_PATH` and `REPLAY_DIR`, or pass `--db` and `--replay-dir`. `.env.example`
-lists the variables; a `.env` file is read only when the optional
-`python-dotenv` package is installed.
+lists the variables; export them in the shell, since the program reads no
+`.env` file.
 
 ## Technical notes
 

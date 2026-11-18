@@ -40,15 +40,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _load_dotenv() -> None:
-    """Load .env when python-dotenv is installed; the program runs without it."""
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    load_dotenv()
-
-
 def _progress(items: list, description: str):
     """Yield items, logging a progress line every 25 items and at the end."""
     total = len(items)
@@ -704,7 +695,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """Main entry point."""
-    _load_dotenv()
     args = parse_args()
 
     if args.verbose:

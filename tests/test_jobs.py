@@ -34,6 +34,10 @@ PLAYER_ID = 86745912
 MATCH_ID = 8554321
 REPLAY_NAME = f"{MATCH_ID}.dem.bz2"
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+# A backup's stamp comes from time.gmtime(); a case that names the new backup
+# pins the clock, so a run across midnight UTC names the same file.
+FIXED_GMTIME = time.struct_time((2026, 11, 5, 13, 30, 12, 3, 309, 0))
+FIXED_BACKUP_NAME = "dota_replays-20261105T133012Z.db"
 
 
 def run(command, cwd, env, merge=False, timeout=120):
@@ -1087,7 +1091,8 @@ class DatabaseCopyTestCase(unittest.TestCase):
         link = self.backup_dir / "dota_replays-20000102T000000Z.db"
         os.symlink(str(outside), str(link))
 
-        self.assertEqual(db_copy.main([]), 0)
+        with mock.patch("time.gmtime", return_value=FIXED_GMTIME):
+            self.assertEqual(db_copy.main([]), 0)
 
         candidates = [
             f
@@ -1104,10 +1109,7 @@ class DatabaseCopyTestCase(unittest.TestCase):
                 valid_candidates.append(c)
             except ValueError:
                 pass
-        now_stamp = time.strftime("%Y%m%dT", time.gmtime())
-        new_candidates = [
-            c for c in valid_candidates if c.startswith(f"dota_replays-{now_stamp}")
-        ]
+        new_candidates = [c for c in valid_candidates if c == FIXED_BACKUP_NAME]
         self.assertEqual(len(new_candidates), 1)
         self.assertEqual(len(valid_candidates), 14)
         self.assertFalse((self.backup_dir / "dota_replays-20010101T000000Z.db").exists())
@@ -1126,13 +1128,12 @@ class DatabaseCopyTestCase(unittest.TestCase):
         for day in range(1, 15):
             self.seed_backup(f"200101{day:02d}T000000Z")
         future = self.seed_backup("20990101T000000Z")
-        self.assertEqual(db_copy.main([]), 1)
+        with mock.patch("time.gmtime", return_value=FIXED_GMTIME):
+            self.assertEqual(db_copy.main([]), 1)
         for day in range(1, 15):
             self.assertTrue((self.backup_dir / f"dota_replays-200101{day:02d}T000000Z.db").is_file())
         self.assertTrue(future.is_file())
-        now_stamp = time.strftime("%Y%m%dT", time.gmtime())
-        new_backups = [f for f in os.listdir(self.backup_dir) if f.startswith(f"dota_replays-{now_stamp}")]
-        self.assertEqual(len(new_backups), 1)
+        self.assertTrue((self.backup_dir / FIXED_BACKUP_NAME).is_file())
 
     def test_a_short_copy_leaves_no_backup(self):
         earlier = self.seed_backup("20010101T000000Z")

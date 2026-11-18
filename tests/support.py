@@ -73,7 +73,13 @@ class _LocalServer:
 
     def __init__(self):
         self._server = _HttpServer(("127.0.0.1", 0), self._build_handler())
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        # close() waits for serve_forever to see the shutdown, which it checks
+        # once per poll interval; the default 0.5 s added up to half the suite.
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            kwargs={"poll_interval": 0.01},
+            daemon=True,
+        )
         self._thread.start()
 
     def _build_handler(self):
