@@ -3,6 +3,7 @@
 import sqlite3
 import json
 import logging
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Any
@@ -447,19 +448,21 @@ class Database:
         return [dict(row) for row in cursor.fetchall()]
 
     def get_unparsed_matches(self, limit: int | None = None, max_age_days: int = 21) -> list[dict]:
-        """Get matches where is_parsed is False and result is not too old."""
-        from datetime import datetime, timedelta
-        cutoff = datetime.now() - timedelta(days=max_age_days)
-        
+        """Get matches where is_parsed is False and result is not too old.
+
+        The cutoff compares Unix seconds, so it is the same in every time zone.
+        """
+        cutoff = int(time.time()) - max_age_days * 86400
+
         query = """
-            SELECT m.match_id, m.start_time 
+            SELECT m.match_id, m.start_time
             FROM matches m
             JOIN match_details md ON m.match_id = md.match_id
             WHERE md.is_parsed = 0
-            AND datetime(m.start_time, 'unixepoch') > ?
+            AND m.start_time > ?
             ORDER BY m.start_time DESC
         """
-        params = [cutoff.strftime('%Y-%m-%d %H:%M:%S')]
+        params = [cutoff]
         
         if limit:
             query += " LIMIT ?"
