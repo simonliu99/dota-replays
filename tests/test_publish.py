@@ -427,10 +427,60 @@ class PublishTestCase(unittest.TestCase):
             summary["oldest_indexed_month"], f"{oldest // 100:04d}-{oldest % 100:02d}"
         )
         self.assertLess(summary["indexed_matches"], summary["total_matches"])
+        # Month keys sort newest first, so the kept months are the smallest keys.
+        all_keys = sorted(
+            f"y:{999999 - ((2020 + step // 12) * 100 + step % 12 + 1)}"
+            for step in range(60)
+        )
+        self.assertEqual(sorted(stored), all_keys[: len(stored)])
+        self.assertIn("y:797587", stored)  # 2024-12, the newest month
         for (collection, key), value in self.hub.documents.items():
             if collection == "matches.1":
                 self.assertLessEqual(len(value), publish.MAX_VALUE)
         self.assertIn("Published ", log)
+
+    def test_months_past_the_first_list_page_are_deleted_and_checked(self):
+        self.seed_one_match_per_month([(1, "One")])
+        code, log = self.run_main()
+        self.assertEqual(code, 0, log)
+        keys = sorted(self.hub.collection("matches.1"))
+        # The store lists 20 documents a page; this month is on page two.
+        self.assertGreater(len(keys), 2 * publish.LIST_PAGE)
+        stale = keys[publish.LIST_PAGE + 5]
+        match_id = self.hub.document("matches.1", stale)["matches"][0]["match_id"]
+        database = Database(str(self.path))
+        try:
+            database.conn.execute("DELETE FROM matches WHERE match_id = ?", (match_id,))
+            database.conn.commit()
+        finally:
+            database.close()
+        self.hub.requests.clear()
+        self.hub.targets.clear()
+
+        code, log = self.run_main(published_ms=PUBLISHED_MS + 60_000)
+
+        self.assertEqual(code, 0, log)
+        self.assertEqual(
+            self.hub.paths("DELETE"), [f"/api/m/dota-replays/docs/matches.1/{stale}"]
+        )
+        self.assertIsNone(self.hub.document("matches.1", stale))
+        self.assertTrue(
+            any("after=" in target for method, target in self.hub.targets
+                if method == "GET"),
+            self.hub.targets,
+        )
+
+        code, log = self.run_main("--check")
+        self.assertEqual(code, 0, log)
+
+        tampered = keys[2 * publish.LIST_PAGE + 3]
+        value = self.hub.document("matches.1", tampered)
+        value["matches"][0]["kills"] += 1
+        self.hub.replace_document("matches.1", tampered, value)
+
+        code, log = self.run_main("--check")
+        self.assertEqual(code, 1, log)
+        self.assertIn(tampered, log)
 
     def test_a_month_over_the_value_limit_is_skipped_and_the_run_exits_1(self):
         # The measured width of one match in a month document, from the golden

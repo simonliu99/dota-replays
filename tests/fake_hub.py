@@ -36,6 +36,8 @@ class FakeHub(_LocalServer):
         # (collection, key) -> the value bytes the store holds.
         self.documents: dict[tuple[str, str], bytes] = {}
         self.requests: list[tuple[str, str]] = []
+        # (method, raw target): each request's path and query as sent.
+        self.targets: list[tuple[str, str]] = []
         # (method, collection, key) -> a status the next request answers.
         self.forced: dict[tuple[str, str, str], int] = {}
         self.updated_ms = 0
@@ -90,6 +92,7 @@ class FakeHub(_LocalServer):
     def handle_request(self, handler, method: str) -> None:
         parsed = urlsplit(handler.path)
         self.requests.append((method, parsed.path))
+        self.targets.append((method, handler.path))
         length = int(handler.headers.get("Content-Length") or 0)
         body = handler.rfile.read(length) if length else b""
         try:
