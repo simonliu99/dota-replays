@@ -241,6 +241,25 @@ class ParsePathTestCase(unittest.TestCase):
         delays = [call.args[0] for call in sleep.call_args_list if call.args]
         self.assertEqual(delays.count(20), polls - 1)
 
+    def test_a_job_object_without_a_state_is_still_pending(self):
+        # OpenDota answers the queue row, which carries no state, while the job
+        # is queued (odota/core getReliableJob), and null once it is gone.
+        path = f"/api/request/{self.job_id}"
+        self.server.sequences[("GET", path)].insert(0, {
+            "id": self.job_id, "jobId": self.job_id, "type": "parse",
+            "timestamp": "2026-11-18T19:25:43.000Z", "attempts": 0,
+            "data": {"match_id": self.match_id}, "next_attempt_time": None,
+            "priority": 1, "job_key": None,
+        })
+        client = self.client()
+        with mock.patch.object(opendota_client.time, "sleep") as sleep:
+            done = client.poll_parse_completion(self.job_id, timeout=300, poll_interval=20)
+
+        self.assertTrue(done)
+        self.assertEqual(self.server.requests, [("GET", path)] * 2)
+        delays = [call.args[0] for call in sleep.call_args_list if call.args]
+        self.assertEqual(delays.count(20), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

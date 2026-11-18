@@ -262,8 +262,8 @@ class OpenDotaClient:
             if not data:
                 return "completed"
 
-            # A job OpenDota still holds is queued or running: the answer is
-            # null once the job is gone (tests/fixtures/opendota-parse.json).
+            # OpenDota answers the queued job's row, which carries no state,
+            # and null once the job is gone (odota/core getReliableJob).
             return data.get("state") or "pending"
 
         return None
