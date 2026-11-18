@@ -144,6 +144,21 @@ The hub schedule `dota-replays-update` stays removed until the repair ran.
 switchboard's `bulk-mount-check` checks its sample with `bzip2 -t`, so pick a
 `.dem.bz2` sample until switchboard accepts a zstd sample.
 
+## Schema version 3 2026-11 (#39)
+
+The first `update` or `verify` run at a revision with #39 migrates
+`dota_replays.db` to schema version 3. It rebuilds `matches` keyed on
+`(match_id, player_id)`, so a match two tracked players share has a row for
+each. The migration copies every row, adds none, and commits the rebuilt table
+with its version row in one transaction; an interrupted run leaves version 2,
+and the next run migrates again. A backup in `db-backups` written before the
+migration holds version 2, and a restored version 2 file is migrated at the
+next run. `db_copy.py` counts rows, so the migration passes the shrink guard.
+
+Each `update` then stores a player's missing rows for shared matches among the
+player's 100 newest matches. A shared match older than that is added by the
+run in "Catching up after a gap".
+
 ## Weekly trigger
 
 The hub schedule `dota-replays-update` submits `update` every 604,800 seconds

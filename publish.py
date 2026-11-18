@@ -151,8 +151,9 @@ def _disk_document(connection: sqlite3.Connection, now_s: int, base: dict) -> di
     stamps = connection.execute(
         "SELECT MAX(downloaded_at), MAX(verified_at) FROM downloads"
     ).fetchone()
+    # A match two tracked players share has a row for each; its replay waits once.
     waiting = connection.execute(
-        "SELECT COUNT(*) FROM matches m "
+        "SELECT COUNT(DISTINCT m.match_id) FROM matches m "
         "JOIN match_details md ON md.match_id = m.match_id "
         "WHERE m.start_time > ? AND md.replay_url IS NOT NULL AND NOT EXISTS "
         "(SELECT 1 FROM downloads d "
