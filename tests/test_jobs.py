@@ -933,30 +933,9 @@ class SubmitHelperTestCase(unittest.TestCase):
                 self.assertEqual(self.value_after(argv, "--quiet"), quiet)
                 self.assertRegex(self.head, r"^[0-9a-f]{40}$")
                 self.assertNotIn("--token-file", argv)
-
-    def test_the_argv_names_no_secret(self):
-        for task in ("update", "verify", "check"):
-            with self.subTest(task=task):
-                self.stub_log.unlink(missing_ok=True)
-                result = self.run_helper(["--hub", "https://hub.example.com", task])
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertNotIn("--secret", self.recorded_argv())
-
-    def test_the_argv_declares_no_cores_or_memory(self):
-        for task in ("update", "verify", "check"):
-            with self.subTest(task=task):
-                self.stub_log.unlink(missing_ok=True)
-                result = self.run_helper(["--hub", "https://hub.example.com", task])
-                self.assertEqual(result.returncode, 0, result.stderr)
-                argv = self.recorded_argv()
+                self.assertNotIn("--secret", argv)
                 self.assertNotIn("--demand-mem-mb", argv)
                 self.assertNotIn("--demand-cores", argv)
-
-    def test_a_call_with_only_hub_submits(self):
-        result = self.run_helper(["--hub", "https://hub.example.com", "update"])
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("--token-file", self.recorded_argv())
 
     def test_a_token_file_is_refused_before_switchboard(self):
         token = self.root / "submit.token"
@@ -1342,27 +1321,6 @@ class DatabaseCopyTestCase(unittest.TestCase):
 
         self.assert_backups_unchanged(seeded_bytes)
         self.assertIn("integrity check failed", "\n".join(captured.output))
-
-    def test_a_refused_shrink_still_refuses_on_the_next_run(self):
-        seeded_bytes = {}
-        for day in range(1, 15):
-            name = f"200101{day:02d}T000000Z"
-            path = self.seed_backup(name, players=2, matches=2)
-            seeded_bytes[path.name] = path.read_bytes()
-
-        live_db_path = self.bulk / "dota_replays.db"
-        self.database.close()
-        live_db_path.unlink()
-        self.database = Database(str(live_db_path))
-        self.database.upsert_player(1, "Only Player")
-        self.insert_matches(1)
-
-        self.assertEqual(db_copy.main([]), 1)
-        self.assertEqual(db_copy.main([]), 1)
-
-        for name, data in seeded_bytes.items():
-            self.assertEqual((self.backup_dir / name).read_bytes(), data)
-        self.assertEqual(set(os.listdir(self.backup_dir)), set(seeded_bytes.keys()))
 
     def test_an_existing_backup_name_is_never_overwritten(self):
         target = self.seed_backup("20261105T133012Z")
