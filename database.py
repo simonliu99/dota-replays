@@ -149,7 +149,8 @@ class Database:
 
         The child tables keep `REFERENCES matches(match_id)`, which no longer
         names a unique key: no connection enables `PRAGMA foreign_keys`, and
-        enabling it makes every write to them fail with `foreign key mismatch`.
+        enabling it makes every insert into them, and every delete, fail with
+        `foreign key mismatch`.
         """
         self.conn.execute("BEGIN")
         self.conn.execute("""

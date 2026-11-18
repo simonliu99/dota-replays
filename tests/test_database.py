@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from database import Database
@@ -202,6 +203,69 @@ class DatabaseTestCase(unittest.TestCase):
         self.assertEqual(versions, [1, 2, 3])
         self.assertEqual(self.read_rows(db), rows)
         self.assertEqual(db.get_download_attempt(12)["attempt_count"], 1)
+
+    def test_an_interrupted_v3_migration_leaves_version_2(self):
+        rows = [(13, PLAYER_ID, 1_600_000_000, 1800, 5, 1, 2, 3, 1, 0)]
+        self.write_v1_file(rows)
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.executescript("""
+                CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+                INSERT INTO schema_version (version) VALUES (1), (2);
+                CREATE TABLE download_attempts (
+                    match_id INTEGER PRIMARY KEY,
+                    attempt_count INTEGER DEFAULT 0,
+                    last_attempt_at TIMESTAMP,
+                    last_error TEXT,
+                    FOREIGN KEY (match_id) REFERENCES matches(match_id)
+                );
+            """)
+        finally:
+            connection.close()
+
+        real_migrate_v3 = Database._migrate_v3
+        interrupted = []
+
+        def migrate_then_interrupt(migration):
+            real_migrate_v3(migration)
+            interrupted.append(migration)
+            raise RuntimeError("interrupted after the rebuild")
+
+        # The exception leaves _run_migrations before it writes the version row
+        # and commits, so the rebuilt table must not survive.
+        with mock.patch.object(Database, "_migrate_v3", migrate_then_interrupt):
+            with self.assertRaises(RuntimeError):
+                Database(str(self.db_path))
+        interrupted[0].conn.close()
+
+        connection = sqlite3.connect(self.db_path)
+        try:
+            versions = [
+                row[0]
+                for row in connection.execute("SELECT version FROM schema_version ORDER BY version")
+            ]
+            self.assertEqual(versions, [1, 2])
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            self.assertNotIn("matches_v3", tables)
+            keys = [row[1] for row in connection.execute("PRAGMA table_info(matches)") if row[5]]
+            self.assertEqual(keys, ["match_id"])
+            stored = [
+                tuple(row)
+                for row in connection.execute(
+                    f"SELECT {MATCH_COLUMNS} FROM matches ORDER BY match_id, player_id"
+                )
+            ]
+            self.assertEqual(stored, rows)
+        finally:
+            connection.close()
+
+        db = self.database()
+        versions = [row[0] for row in db.conn.execute("SELECT version FROM schema_version ORDER BY version")]
+        self.assertEqual(versions, [1, 2, 3])
+        self.assertEqual(self.read_rows(db), rows)
 
     def test_a_match_two_players_share_is_stored_for_each(self):
         db = self.database()
