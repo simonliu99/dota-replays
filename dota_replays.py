@@ -19,7 +19,7 @@ from typing import NamedTuple
 import publish
 import replay_format
 from database import Database
-from opendota_client import OpenDotaClient
+from opendota_client import OpenDotaClient, RateLimited
 
 # Seconds a replay download may stay silent before it fails.
 DOWNLOAD_TIMEOUT = 60
@@ -38,15 +38,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
-
-
-def _load_dotenv() -> None:
-    """Load .env when python-dotenv is installed; the program runs without it."""
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    load_dotenv()
 
 
 def _progress(items: list, description: str):
@@ -148,6 +139,24 @@ class DotaReplays:
         logger.info(f"Waiting up to {timeout}s for parse of match {match_id}...")
         return self.client.poll_parse_completion(job_id, timeout=timeout)
 
+    def update_players(
+        self, player_ids: list[int], limit: int | None = None
+    ) -> list[PlayerUpdate]:
+        """Update each player, then download the run's replays once.
+
+        A RateLimited answer stops the player updates. The replay downloads,
+        which do not ask OpenDota, still run before the error ends the run.
+        """
+        updates = []
+        try:
+            for player_id in player_ids:
+                updates.append(self.update_player(player_id, limit=limit))
+        except RateLimited:
+            self._download_replays(force_retry=self.force_retry)
+            raise
+        self._download_replays(force_retry=self.force_retry)
+        return updates
+
     def update_player(self, player_id: int, limit: int | None = None) -> PlayerUpdate:
         """Update match data for a single player and report what was fetched."""
         logger.info(f"Updating player {player_id}")
@@ -176,8 +185,8 @@ class DotaReplays:
         new_count = self.db.insert_matches(player_id, matches)
         logger.info(f"Found {len(matches)} matches, {new_count} new")
 
-        # Get details for matches without cache. main() downloads the replays
-        # once after every player is updated, so one run tries each replay once.
+        # Get details for matches without cache. update_players downloads the
+        # replays once after every player, so one run tries each replay once.
         self._fetch_match_details(player_id, limit)
 
         return PlayerUpdate(player_fetched=True, matches_fetched=True)
@@ -686,7 +695,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """Main entry point."""
-    _load_dotenv()
     args = parse_args()
 
     if args.verbose:
@@ -733,8 +741,7 @@ def main() -> None:
             app.verify_downloads(redownload=args.redownload)
         elif args.player_id:
             # Update specific player
-            updates.append(app.update_player(args.player_id, limit=args.limit))
-            app._download_replays(force_retry=app.force_retry)
+            updates = app.update_players([args.player_id], limit=args.limit)
         else:
             # Update all tracked players
             players = db.get_all_players()
@@ -744,10 +751,12 @@ def main() -> None:
                 sys.exit(0)
 
             logger.info(f"Updating {len(players)} tracked players...")
-            for player in players:
-                updates.append(app.update_player(player["player_id"], limit=args.limit))
-            app._download_replays(force_retry=app.force_retry)
-
+            updates = app.update_players(
+                [player["player_id"] for player in players], limit=args.limit
+            )
+    except RateLimited as error:
+        # The client counted the request, so the run exits 1 below.
+        logger.error(f"Stopped asking OpenDota for this run: {error}")
     finally:
         db.close()
 

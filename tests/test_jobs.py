@@ -33,7 +33,12 @@ HUB_TOKEN = "sbm_test_token"
 PLAYER_ID = 86745912
 MATCH_ID = 8554321
 REPLAY_NAME = f"{MATCH_ID}.dem.bz2"
+REPLAY_BODY = b"BZh" + b"a replay body"
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+# A backup's stamp comes from time.gmtime(); a case that names the new backup
+# pins the clock, so a run across midnight UTC names the same file.
+FIXED_GMTIME = time.struct_time((2026, 11, 5, 13, 30, 12, 3, 309, 0))
+FIXED_BACKUP_NAME = "dota_replays-20261105T133012Z.db"
 
 
 def run(command, cwd, env, merge=False, timeout=120):
@@ -71,6 +76,14 @@ class JobEntryTestCase(unittest.TestCase):
         self.addCleanup(self.hub.close)
         self.opendota = RecordedOpenDota(FIXTURE_PATH)
         self.addCleanup(self.opendota.close)
+        # The recorded details name a real Valve replay URL; an entry case that
+        # downloads the match's replay asks this local server instead.
+        self.replay_server = ReplayServer(REPLAY_BODY)
+        self.addCleanup(self.replay_server.close)
+        self.match_id = load_fixture()["match_ids"][0]
+        self.opendota.responses[f"/api/matches/{self.match_id}"]["replay_url"] = (
+            f"{self.replay_server.base_url}/570/{self.match_id}.dem.bz2"
+        )
 
     def env(self, **overrides):
         """Return an entry environment that uses this test's python3."""
@@ -173,14 +186,27 @@ class JobEntryTestCase(unittest.TestCase):
                 pairs.append((name, kind))
         return pairs
 
-    def test_a_missing_variable_fails_and_creates_nothing(self):
-        for name in ("SWITCHBOARD_BULK", "DOTA_REPLAY_DIR"):
-            with self.subTest(name=name):
-                env, directories = self.case_env(f"missing-variable-{name}")
-                del env[name]
-                result = self.run_entry(UPDATE_ENTRY, env, cwd=directories["run"])
-                self.assertNotEqual(result.returncode, 0)
-                self.assert_empty(directories)
+    def test_a_missing_variable_exits_1_and_creates_nothing(self):
+        # /bin/sh is bash on macOS and dash on the Debian worker; dash exits 2
+        # where a ${name:?} expansion fails, so each shell present runs.
+        shells = ["/bin/sh"] + [shell for shell in [shutil.which("dash")] if shell]
+        cases = [
+            (UPDATE_ENTRY, "SWITCHBOARD_BULK"),
+            (UPDATE_ENTRY, "DOTA_REPLAY_DIR"),
+            (VERIFY_ENTRY, "SWITCHBOARD_BULK"),
+            (VERIFY_ENTRY, "DOTA_REPLAY_DIR"),
+            (CHECK_ENTRY, "SWITCHBOARD_BULK"),
+        ]
+        for shell in shells:
+            for entry, name in cases:
+                with self.subTest(shell=shell, entry=entry.name, name=name):
+                    label = f"missing-variable-{Path(shell).name}-{entry.name}-{name}"
+                    env, directories = self.case_env(label)
+                    del env[name]
+                    result = run([shell, str(entry)], directories["run"], env)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(f"{name} is not set", result.stderr)
+                    self.assert_empty(directories)
 
     def test_check_entry_compares_the_index_with_the_database(self):
         fixture = load_fixture()
@@ -258,17 +284,16 @@ class JobEntryTestCase(unittest.TestCase):
         self.assertIn("below 3.10", result.stderr)
         self.assert_nothing_created()
 
-    def test_update_entry_backs_up_the_database_into_the_replay_folder(self):
+    def test_update_entry_downloads_the_replay_and_backs_up_the_database(self):
         fixture = load_fixture()
         player_id = fixture["player_id"]
-        match_id = fixture["match_ids"][0]
-        opendota = RecordedOpenDota(FIXTURE_PATH)
-        self.addCleanup(opendota.close)
-        replay_server = ReplayServer(b"BZha replay body")
-        self.addCleanup(replay_server.close)
-        opendota.responses[f"/api/matches/{match_id}"]["replay_url"] = (
-            f"{replay_server.base_url}/570/{match_id}.dem.bz2"
-        )
+        match_id = self.match_id
+        # Serve the recorded match as played now, so the update's download
+        # step asks for its replay instead of skipping a match past 21 days.
+        now = int(time.time())
+        self.opendota.responses[f"/api/matches/{match_id}"]["start_time"] = now
+        for entry in self.opendota.responses[f"/api/players/{player_id}/matches"]:
+            entry["start_time"] = now
         self.seed_player(player_id)
 
         backup_dir = self.replays / "db-backups"
@@ -276,11 +301,7 @@ class JobEntryTestCase(unittest.TestCase):
         # Subcase A: sets DOTA_DB_COPY_DIR to legacy-copy
         before_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         result_a = self.run_entry(
-            UPDATE_ENTRY,
-            self.env(
-                OPENDOTA_BASE_URL=f"{opendota.base_url}/api",
-                DOTA_DB_COPY_DIR=str(self.legacy_copy),
-            ),
+            UPDATE_ENTRY, self.env(DOTA_DB_COPY_DIR=str(self.legacy_copy))
         )
         after_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -314,8 +335,24 @@ class JobEntryTestCase(unittest.TestCase):
         self.assertFalse((self.bulk / "dota_replays.db.copy").exists())
         self.assertEqual(os.listdir(self.legacy_copy), [])
 
+        replay_name = f"{match_id}.dem.bz2"
+        self.assertEqual((self.replays / replay_name).read_bytes(), REPLAY_BODY)
+        self.assertEqual(
+            self.replay_server.requests, [("GET", f"/570/{replay_name}")]
+        )
+        database = Database(str(self.bulk / "dota_replays.db"))
+        try:
+            self.assertEqual(
+                [(row["match_id"], row["filename"], row["file_size"])
+                 for row in database.get_downloads()],
+                [(match_id, replay_name, len(REPLAY_BODY))],
+            )
+        finally:
+            database.close()
+        self.assertNotIn("POST", [method for method, _ in self.opendota.requests])
+
         # Subcase B: unsets DOTA_DB_COPY_DIR: exits 0
-        env_b = self.env(OPENDOTA_BASE_URL=f"{opendota.base_url}/api")
+        env_b = self.env()
         env_b.pop("DOTA_DB_COPY_DIR", None)
         result_b = self.run_entry(UPDATE_ENTRY, env_b)
         self.assertEqual(result_b.returncode, 0, result_b.stderr)
@@ -1087,7 +1124,8 @@ class DatabaseCopyTestCase(unittest.TestCase):
         link = self.backup_dir / "dota_replays-20000102T000000Z.db"
         os.symlink(str(outside), str(link))
 
-        self.assertEqual(db_copy.main([]), 0)
+        with mock.patch("time.gmtime", return_value=FIXED_GMTIME):
+            self.assertEqual(db_copy.main([]), 0)
 
         candidates = [
             f
@@ -1104,10 +1142,7 @@ class DatabaseCopyTestCase(unittest.TestCase):
                 valid_candidates.append(c)
             except ValueError:
                 pass
-        now_stamp = time.strftime("%Y%m%dT", time.gmtime())
-        new_candidates = [
-            c for c in valid_candidates if c.startswith(f"dota_replays-{now_stamp}")
-        ]
+        new_candidates = [c for c in valid_candidates if c == FIXED_BACKUP_NAME]
         self.assertEqual(len(new_candidates), 1)
         self.assertEqual(len(valid_candidates), 14)
         self.assertFalse((self.backup_dir / "dota_replays-20010101T000000Z.db").exists())
@@ -1126,13 +1161,12 @@ class DatabaseCopyTestCase(unittest.TestCase):
         for day in range(1, 15):
             self.seed_backup(f"200101{day:02d}T000000Z")
         future = self.seed_backup("20990101T000000Z")
-        self.assertEqual(db_copy.main([]), 1)
+        with mock.patch("time.gmtime", return_value=FIXED_GMTIME):
+            self.assertEqual(db_copy.main([]), 1)
         for day in range(1, 15):
             self.assertTrue((self.backup_dir / f"dota_replays-200101{day:02d}T000000Z.db").is_file())
         self.assertTrue(future.is_file())
-        now_stamp = time.strftime("%Y%m%dT", time.gmtime())
-        new_backups = [f for f in os.listdir(self.backup_dir) if f.startswith(f"dota_replays-{now_stamp}")]
-        self.assertEqual(len(new_backups), 1)
+        self.assertTrue((self.backup_dir / FIXED_BACKUP_NAME).is_file())
 
     def test_a_short_copy_leaves_no_backup(self):
         earlier = self.seed_backup("20010101T000000Z")

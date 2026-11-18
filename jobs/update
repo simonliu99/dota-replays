@@ -12,12 +12,18 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-: "${SWITCHBOARD_BULK:?SWITCHBOARD_BULK is not set}"
+[ -n "${SWITCHBOARD_BULK:-}" ] || {
+    printf '%s: SWITCHBOARD_BULK is not set\n' "$0" >&2
+    exit 1
+}
 [ -d "$SWITCHBOARD_BULK" ] || {
     printf '%s: SWITCHBOARD_BULK is not a directory: %s\n' "$0" "$SWITCHBOARD_BULK" >&2
     exit 1
 }
-: "${DOTA_REPLAY_DIR:?DOTA_REPLAY_DIR is not set}"
+[ -n "${DOTA_REPLAY_DIR:-}" ] || {
+    printf '%s: DOTA_REPLAY_DIR is not set\n' "$0" >&2
+    exit 1
+}
 [ -d "$DOTA_REPLAY_DIR" ] || {
     printf '%s: DOTA_REPLAY_DIR is not a directory: %s\n' "$0" "$DOTA_REPLAY_DIR" >&2
     exit 1

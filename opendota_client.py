@@ -18,16 +18,17 @@ USER_AGENT = "dota-replays/1.0"
 FAILED_STATUS = 0
 
 
-class ApiResponse:
-    """An HTTP answer holding the status and body the client's callers read."""
+class RateLimited(Exception):
+    """OpenDota still answered 429 after the 60 s wait; the run stops asking."""
 
-    def __init__(self, status_code: int, body: bytes):
+
+class ApiResponse:
+    """An HTTP answer: its status, its body and, for a 200, the decoded JSON."""
+
+    def __init__(self, status_code: int, body: bytes, data: Any = None):
         self.status_code = status_code
         self.body = body
-
-    def json(self) -> Any:
-        """Decode the body as JSON."""
-        return json.loads(self.body.decode("utf-8"))
+        self.data = data
 
 
 class OpenDotaClient:
@@ -65,10 +66,12 @@ class OpenDotaClient:
     ) -> ApiResponse:
         """Make a rate-limited request, retrying 429 and 5xx answers.
 
-        A connection that never opens, or a body cut short after the headers,
-        answers FAILED_STATUS instead of raising. An answer that carried
-        nothing counts in failed_requests, so main() can exit nonzero from any
-        mode.
+        A connection that never opens, a body cut short after the headers, or
+        a 200 whose body is not JSON answers FAILED_STATUS instead of raising.
+        An answer that carried nothing counts in failed_requests, so main()
+        can exit nonzero from any mode. A 429 that outlasts the 60 s wait
+        raises RateLimited, so the run stops asking instead of waiting about
+        75 s on every later request.
         """
         query = dict(params or {})
 
@@ -88,11 +91,38 @@ class OpenDotaClient:
             self.failed_requests += 1
             return ApiResponse(FAILED_STATUS, b"")
 
-        if response.status_code in self.RETRY_STATUSES:
-            # A 429 or a 5xx the retries did not clear is a failed fetch.
+        if response.status_code == 429:
             self.failed_requests += 1
+            raise RateLimited(
+                f"{method} {endpoint} still answered 429 after a "
+                f"{self.RATE_LIMIT_WAIT} s wait"
+            )
+        if response.status_code in self.RETRY_STATUSES:
+            # A 5xx the retries did not clear is a failed fetch.
+            self.failed_requests += 1
+            return response
+        if response.status_code == 200:
+            try:
+                response.data = json.loads(response.body.decode("utf-8"))
+            except ValueError as error:
+                # A front end's challenge page answers 200 with HTML.
+                logger.error(f"{method} {endpoint} answered 200 without JSON: {error}")
+                self.failed_requests += 1
+                return ApiResponse(FAILED_STATUS, b"")
 
         return response
+
+    def _decoded(self, response: ApiResponse, kinds: tuple, what: str) -> Any:
+        """Return a 200 answer's JSON when it is one of kinds, else None.
+
+        An answer of another type carried nothing the caller can read, so it
+        counts in failed_requests.
+        """
+        if isinstance(response.data, kinds):
+            return response.data
+        logger.error(f"{what} answered {type(response.data).__name__} JSON")
+        self.failed_requests += 1
+        return None
 
     def _request_with_retries(self, method: str, endpoint: str, url: str) -> ApiResponse:
         """Attempt one request up to four times, backing off on 429 and 5xx."""
@@ -129,7 +159,9 @@ class OpenDotaClient:
         """Get player profile data."""
         response = self._request("GET", f"/players/{player_id}")
         if response.status_code == 200:
-            data = response.json()
+            data = self._decoded(response, (dict,), f"Player {player_id}")
+            if data is None:
+                return None
             if "profile" in data:
                 return data
             logger.error(f"Player {player_id} answered no profile")
@@ -147,7 +179,7 @@ class OpenDotaClient:
 
         response = self._request("GET", f"/players/{player_id}/matches", params=params)
         if response.status_code == 200:
-            return response.json()
+            return self._decoded(response, (list,), f"The match list of player {player_id}")
 
         logger.error(f"Failed to get matches for player {player_id}: {response.status_code}")
         return None
@@ -156,7 +188,7 @@ class OpenDotaClient:
         """Get detailed match data."""
         response = self._request("GET", f"/matches/{match_id}")
         if response.status_code == 200:
-            return response.json()
+            return self._decoded(response, (dict,), f"Match {match_id}")
 
         if response.status_code == 404:
             # An expired or missing match is ordinary, the same as an expired
@@ -170,7 +202,9 @@ class OpenDotaClient:
         """Get the localized hero names by hero id, or None on a failure."""
         response = self._request("GET", "/heroes")
         if response.status_code == 200:
-            data = response.json()
+            data = self._decoded(response, (list,), "The hero constants")
+            if data is None:
+                return None
             return {
                 hero["id"]: hero["localized_name"]
                 for hero in data
@@ -193,7 +227,9 @@ class OpenDotaClient:
         time.sleep(delay)
 
         if response.status_code == 200:
-            data = response.json()
+            data = self._decoded(response, (dict,), f"The parse request for match {match_id}")
+            if data is None:
+                return None
             job = data.get("job", {})
             job_id = job.get("jobId")
             if job_id:
@@ -212,7 +248,11 @@ class OpenDotaClient:
         if response.status_code == 200:
             # If the job is still pending, it returns job info
             # If it's completed, it might return empty or complete info
-            data = response.json()
+            if response.data is None:
+                return "completed"
+            data = self._decoded(response, (dict,), f"Parse job {job_id}")
+            if data is None:
+                return None
             if not data:
                 return "completed"
 
