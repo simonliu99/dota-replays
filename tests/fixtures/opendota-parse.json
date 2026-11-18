@@ -1,0 +1,26 @@
+{
+  "source": "https://api.opendota.com/api",
+  "recorded_at": "2026-11-18T19:25:43+00:00",
+  "match_id": 9025128045,
+  "job_id": 648525506,
+  "responses": [
+    {
+      "method": "POST",
+      "url": "https://api.opendota.com/api/request/9025128045",
+      "path": "/api/request/9025128045",
+      "status": 200,
+      "body": {
+        "job": {
+          "jobId": 648525506
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://api.opendota.com/api/request/648525506",
+      "path": "/api/request/648525506",
+      "status": 200,
+      "body": null
+    }
+  ]
+}

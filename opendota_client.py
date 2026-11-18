@@ -219,6 +219,9 @@ class OpenDotaClient:
         Submit a parse request for a match.
         Returns job_id if successful, None otherwise.
         Note: This counts as 10 API calls for rate limiting.
+
+        A request OpenDota refused, or answered without a job id, counts in
+        failed_requests, so the run that asked exits nonzero.
         """
         response = self._request("POST", f"/request/{match_id}")
 
@@ -237,6 +240,9 @@ class OpenDotaClient:
                 return job_id
 
         logger.warning(f"Failed to request parse for match {match_id}: {response.status_code}")
+        if response.status_code not in (FAILED_STATUS, *self.RETRY_STATUSES):
+            # _request counted a failed connection or a 5xx already.
+            self.failed_requests += 1
         return None
 
     def get_parse_status(self, job_id: int) -> str | None:
@@ -256,11 +262,9 @@ class OpenDotaClient:
             if not data:
                 return "completed"
 
-            # Check state if present
-            # Typical OpenDota job response: {"jobId": "...", "state": "active", ...}
-            # Or it might just return null/empty when finished.
-            # Based on docs: "The response will tell you if the job is 'pending', 'failed', or 'completed'."
-            return data.get("state") or "completed"
+            # OpenDota answers the queued job's row, which carries no state,
+            # and null once the job is gone (odota/core getReliableJob).
+            return data.get("state") or "pending"
 
         return None
 
