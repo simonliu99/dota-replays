@@ -976,13 +976,13 @@ class FakeHubRulesTestCase(unittest.TestCase):
         self.addCleanup(self.hub.close)
         self.store = publish.Store(self.hub.base_url, TOKEN)
 
-    def raw(self, method, path, body=None, token=TOKEN):
+    def raw(self, method, path, body=None, token=TOKEN, authorization=None):
         request = urllib.request.Request(
             self.hub.base_url + path,
             data=body,
             method=method,
             headers={
-                "Authorization": f"Bearer {token}",
+                "Authorization": authorization or f"Bearer {token}",
                 "Content-Type": "application/json",
             },
         )
@@ -1012,17 +1012,64 @@ class FakeHubRulesTestCase(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertIn(b"invalid", body)
 
-    def test_a_percent_encoded_key_answers_400(self):
-        status, body = self.raw("PUT", "/api/m/dota-replays/docs/c/y%3A1", b"{}")
+    def test_an_escaped_and_a_plain_name_are_the_same_document(self):
+        # switchboard e4fd19fc internal/httpapi/docs_test.go
+        # TestDocNamesAreDecodedOnEveryMethod, against the fake.
+        escaped = "/api/m/dota-replays/docs/y%3A1/y%3A797597"
+        plain = "/api/m/dota-replays/docs/y:1/y:797597"
 
+        self.assertEqual(self.raw("PUT", escaped, b'{"x":1}')[0], 204)
+        for path in (escaped, plain):
+            self.assertEqual(self.raw("GET", path), (200, b'{"x":1}'), path)
+        self.assertEqual(self.raw("PUT", plain, b'{"x":2}')[0], 204)
+        self.assertEqual(self.raw("GET", escaped), (200, b'{"x":2}'))
+        self.assertEqual(self.raw("DELETE", escaped)[0], 204)
+        self.assertEqual(self.raw("GET", plain)[0], 404)
+
+        status, body = self.raw("GET", "/api/m/dota-replays/docs/y%zz1")
         self.assertEqual(status, 400)
-        self.assertIn(b"invalid", body)
+        self.assertIn(b"not validly escaped", body)
+
+    def test_a_body_over_the_limit_as_sent_answers_413(self):
+        value = b'{"x": "a"}' + b" " * publish.MAX_VALUE
+
+        status, body = self.raw("PUT", "/api/m/dota-replays/docs/c/k", value)
+
+        self.assertEqual(status, 413)
+        self.assertIn(b"too-large", body)
         self.assertEqual(self.hub.documents, {})
 
-        status, body = self.raw("PUT", "/api/m/dota-replays/docs/c/y:1", b"{}")
+    def test_a_value_is_stored_compacted_as_sent(self):
+        sent = b'{ "b": 1.50, "a": "caf\\u00e9", "c": [1, 2] }'
 
-        self.assertEqual(status, 204)
-        self.assertIn(("c", "y:1"), self.hub.documents)
+        self.assertEqual(self.raw("PUT", "/api/m/dota-replays/docs/c/k", sent)[0], 204)
+
+        self.assertEqual(
+            self.raw("GET", "/api/m/dota-replays/docs/c/k"),
+            (200, b'{"b":1.50,"a":"caf\\u00e9","c":[1,2]}'),
+        )
+
+    def test_a_value_holding_nan_answers_400(self):
+        for value in (b'{"x": NaN}', b'{"x": Infinity}'):
+            with self.subTest(value=value):
+                status, body = self.raw("PUT", "/api/m/dota-replays/docs/c/k", value)
+                self.assertEqual(status, 400)
+                self.assertIn(b"invalid", body)
+        self.assertEqual(self.hub.documents, {})
+
+    def test_a_request_without_a_bearer_token_answers_no_token(self):
+        cases = {
+            "basic": ("Basic dXNlcjpwYXNz", "no-token"),
+            "empty bearer": ("Bearer ", "no-token"),
+            "unknown token": ("Bearer sbm_other_token", "invalid-token"),
+        }
+        for label, (authorization, code) in cases.items():
+            with self.subTest(label=label):
+                status, body = self.raw(
+                    "GET", "/api/m/dota-replays/docs/meta", authorization=authorization
+                )
+                self.assertEqual(status, 401)
+                self.assertEqual(json.loads(body)["code"], code)
 
     def test_a_list_page_over_200_answers_400(self):
         status, body = self.raw("GET", "/api/m/dota-replays/docs/meta?limit=201")
