@@ -2,7 +2,6 @@
 
 import ast
 import os
-import plistlib
 import re
 import shutil
 import sqlite3
@@ -28,7 +27,6 @@ UPDATE_ENTRY = ROOT / "jobs" / "update"
 VERIFY_ENTRY = ROOT / "jobs" / "verify"
 CHECK_ENTRY = ROOT / "jobs" / "check"
 SUBMIT_HELPER = ROOT / "scripts" / "switchboard-submit"
-PLIST = ROOT / "switchboard" / "dev.dota-replays.update.plist"
 POLICY_EXAMPLE = ROOT / "switchboard" / "policy.example.toml"
 HUB_TOKEN = "sbm_test_token"
 
@@ -1402,7 +1400,7 @@ class ParseWaitBudgetTestCase(unittest.TestCase):
         )
 
 
-class TriggerTestCase(unittest.TestCase):
+class ShellScriptTestCase(unittest.TestCase):
     def test_each_shell_script_parses_and_is_executable(self):
         for script in (UPDATE_ENTRY, VERIFY_ENTRY, CHECK_ENTRY, SUBMIT_HELPER):
             with self.subTest(script=script.name):
@@ -1414,33 +1412,6 @@ class TriggerTestCase(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(os.access(script, os.X_OK), f"{script} is not executable")
-
-    @unittest.skipUnless(
-        shutil.which("plutil"),
-        "plutil is a macOS tool; this case lints the launchd plist",
-    )
-    def test_plutil_accepts_the_trigger(self):
-        result = subprocess.run(
-            ["plutil", "-lint", str(PLIST)],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-
-    def test_the_trigger_submits_weekly_after_0500_on_thursday(self):
-        with PLIST.open("rb") as handle:
-            plist = plistlib.load(handle)
-
-        self.assertEqual(plist["Label"], "dev.dota-replays.update")
-        arguments = plist["ProgramArguments"]
-        self.assertEqual(arguments[-1], "update")
-        self.assertNotIn("--token-file", arguments)
-        self.assertEqual(arguments[arguments.index("--not-before") + 1], "05:00")
-        self.assertEqual(
-            plist["StartCalendarInterval"],
-            [{"Weekday": 4, "Hour": 5, "Minute": 30}],
-        )
 
 
 class PolicyExampleTestCase(unittest.TestCase):

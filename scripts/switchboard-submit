@@ -6,9 +6,7 @@
 #
 # The helper keeps a bare clone of the public repository and fetches master
 # before every submit, so the job runs the commit master points at now.
-# --not-before refuses a run before that Pacific time: launchd runs a calendar
-# time missed while the Mac slept at its next wake, and a wake in the small
-# hours then submits nothing; the following Thursday's time does.
+# --not-before refuses a run before that Pacific time and submits nothing.
 #
 # `switchboard submit` takes its token from this host's agent binding for
 # `--hub`. The hub sets SWITCHBOARD_MODULE_TOKEN in each job, so the helper
