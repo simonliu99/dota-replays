@@ -12,6 +12,8 @@ APP_MODULES = (
     "db_copy",
     "publish",
     "replay_folder",
+    "replay_format",
+    "repair_replay_names",
 )
 
 
