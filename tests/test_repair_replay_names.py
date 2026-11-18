@@ -89,6 +89,13 @@ class RepairReplayNamesTestCase(unittest.TestCase):
 
         code, output = self.run_main()
 
+        self.assertEqual(sorted(os.listdir(self.folder)), listing_before)
+        self.assertEqual(
+            {name: (self.folder / name).read_bytes() for name in listing_before},
+            files_before,
+        )
+        self.assertEqual(sorted(os.listdir(self.root)), root_before)
+        self.assertEqual(self.db_path.read_bytes(), database_before)
         self.assertEqual(code, 1)
         self.assertIn(
             "would rename 2_2.dem.bz2 -> 2_2.dem.zst (row: match 123)", output
@@ -97,13 +104,6 @@ class RepairReplayNamesTestCase(unittest.TestCase):
         self.assertIn("left alone: 4_4.dem.bz2 (unknown 6a756e6b)", output)
         self.assertIn("dry run: 2 renames, 0 row updates, 0 conflicts", output)
         self.assertIn("wal file present: False", output)
-        self.assertEqual(sorted(os.listdir(self.folder)), listing_before)
-        self.assertEqual(
-            {name: (self.folder / name).read_bytes() for name in listing_before},
-            files_before,
-        )
-        self.assertEqual(sorted(os.listdir(self.root)), root_before)
-        self.assertEqual(self.db_path.read_bytes(), database_before)
 
     def test_apply_renames_the_files_and_updates_the_row(self):
         self.seed_mixed_folder()
