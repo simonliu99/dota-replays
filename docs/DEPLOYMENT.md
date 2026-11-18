@@ -101,26 +101,41 @@ without rewriting its bytes, and updates the `downloads` row that names it. It
 never changes a bzip2 file, a `.part` file or a file of an unknown format. Run
 it as the worker's account, with no dota-replays job queued or running.
 
+On the node, as the worker's account, set the three values once and look at the database's `-wal` file:
+
+```bash
+REPO=                # the worker's dota-replays checkout, at a revision that has repair_replay_names.py
+SWITCHBOARD_BULK=    # the worker policy's SWITCHBOARD_BULK
+DOTA_REPLAY_DIR=     # the worker policy's DOTA_REPLAY_DIR
+if [ -f "$REPO/repair_replay_names.py" ] && [ -d "$SWITCHBOARD_BULK" ] && [ -d "$DOTA_REPLAY_DIR" ]; then ls -l "$SWITCHBOARD_BULK/dota_replays.db-wal"; else echo "set REPO, SWITCHBOARD_BULK and DOTA_REPLAY_DIR"; fi
+```
+
+A `-wal` file of 0 bytes, or none, is the normal state after a job: `publish.py` and `db_copy.py` open the database read-only, which leaves an empty `-wal` file, so the dry run's `wal file present: True` is expected. A `-wal` file larger than 0 bytes holds rows the dry run cannot read, because it opens the database immutable: stop and report it before the dry run.
+
 The dry run changes nothing and exits 1 while work remains:
 
 ```bash
-python3 repair_replay_names.py --db "$SWITCHBOARD_BULK/dota_replays.db" --replay-dir "$DOTA_REPLAY_DIR"
+python3 "$REPO/repair_replay_names.py" --db "$SWITCHBOARD_BULK/dota_replays.db" --replay-dir "$DOTA_REPLAY_DIR"
 ```
 
 `N renames` is the number of files it will rename and `M row updates` the rows
 an interrupted earlier run left. `conflicts` counts a name whose `.dem.zst`
-file already exists, which it reports and never overwrites.
+file already exists, which it reports and never overwrites. A conflict needs a
+decision about which file to keep: stop and report it. `--apply` exits 1 while
+one remains.
 
 Apply it:
 
 ```bash
-python3 repair_replay_names.py --db "$SWITCHBOARD_BULK/dota_replays.db" --replay-dir "$DOTA_REPLAY_DIR" --apply
+python3 "$REPO/repair_replay_names.py" --db "$SWITCHBOARD_BULK/dota_replays.db" --replay-dir "$DOTA_REPLAY_DIR" --apply
 ```
 
 `--apply` first copies the database to
 `$SWITCHBOARD_BULK/dota_replays.db.before-repair-<UTC stamp>` beside it, and it
 stops without renaming anything unless the copy passes `PRAGMA integrity_check`.
-It exits 0 when nothing is left to repair, so a second run is the check. If
+Then run the dry run again: it exits 0 and prints `dry run: 0 renames, 0 row
+updates, 0 conflicts` when nothing is left. Each `--apply` writes a new copy;
+the oldest `before-repair` copy is the one taken before the first rename. If
 `--apply` stops early, run it again before any job. After restoring a database
 backup taken before the repair, run the dry run and `--apply` again. `check`
 reports differences until the following `verify` publishes the new names.
