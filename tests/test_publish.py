@@ -427,10 +427,60 @@ class PublishTestCase(unittest.TestCase):
             summary["oldest_indexed_month"], f"{oldest // 100:04d}-{oldest % 100:02d}"
         )
         self.assertLess(summary["indexed_matches"], summary["total_matches"])
+        # Month keys sort newest first, so the kept months are the smallest keys.
+        all_keys = sorted(
+            f"y:{999999 - ((2020 + step // 12) * 100 + step % 12 + 1)}"
+            for step in range(60)
+        )
+        self.assertEqual(sorted(stored), all_keys[: len(stored)])
+        self.assertIn("y:797587", stored)  # 2024-12, the newest month
         for (collection, key), value in self.hub.documents.items():
             if collection == "matches.1":
                 self.assertLessEqual(len(value), publish.MAX_VALUE)
         self.assertIn("Published ", log)
+
+    def test_months_past_the_first_list_page_are_deleted_and_checked(self):
+        self.seed_one_match_per_month([(1, "One")])
+        code, log = self.run_main()
+        self.assertEqual(code, 0, log)
+        keys = sorted(self.hub.collection("matches.1"))
+        # The store lists 20 documents a page; this month is on page two.
+        self.assertGreater(len(keys), 2 * publish.LIST_PAGE)
+        stale = keys[publish.LIST_PAGE + 5]
+        match_id = self.hub.document("matches.1", stale)["matches"][0]["match_id"]
+        database = Database(str(self.path))
+        try:
+            database.conn.execute("DELETE FROM matches WHERE match_id = ?", (match_id,))
+            database.conn.commit()
+        finally:
+            database.close()
+        self.hub.requests.clear()
+        self.hub.targets.clear()
+
+        code, log = self.run_main(published_ms=PUBLISHED_MS + 60_000)
+
+        self.assertEqual(code, 0, log)
+        self.assertEqual(
+            self.hub.paths("DELETE"), [f"/api/m/dota-replays/docs/matches.1/{stale}"]
+        )
+        self.assertIsNone(self.hub.document("matches.1", stale))
+        self.assertTrue(
+            any("after=" in target for method, target in self.hub.targets
+                if method == "GET"),
+            self.hub.targets,
+        )
+
+        code, log = self.run_main("--check")
+        self.assertEqual(code, 0, log)
+
+        tampered = keys[2 * publish.LIST_PAGE + 3]
+        value = self.hub.document("matches.1", tampered)
+        value["matches"][0]["kills"] += 1
+        self.hub.replace_document("matches.1", tampered, value)
+
+        code, log = self.run_main("--check")
+        self.assertEqual(code, 1, log)
+        self.assertIn(tampered, log)
 
     def test_a_month_over_the_value_limit_is_skipped_and_the_run_exits_1(self):
         # The measured width of one match in a month document, from the golden
@@ -926,13 +976,13 @@ class FakeHubRulesTestCase(unittest.TestCase):
         self.addCleanup(self.hub.close)
         self.store = publish.Store(self.hub.base_url, TOKEN)
 
-    def raw(self, method, path, body=None, token=TOKEN):
+    def raw(self, method, path, body=None, token=TOKEN, authorization=None):
         request = urllib.request.Request(
             self.hub.base_url + path,
             data=body,
             method=method,
             headers={
-                "Authorization": f"Bearer {token}",
+                "Authorization": authorization or f"Bearer {token}",
                 "Content-Type": "application/json",
             },
         )
@@ -962,17 +1012,63 @@ class FakeHubRulesTestCase(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertIn(b"invalid", body)
 
-    def test_a_percent_encoded_key_answers_400(self):
-        status, body = self.raw("PUT", "/api/m/dota-replays/docs/c/y%3A1", b"{}")
+    def test_an_escaped_and_a_plain_name_are_the_same_document(self):
+        # switchboard e4fd19fc internal/httpapi/docs_test.go
+        # TestDocNamesAreDecodedOnEveryMethod, against the fake.
+        escaped = "/api/m/dota-replays/docs/y%3A1/y%3A797597"
+        plain = "/api/m/dota-replays/docs/y:1/y:797597"
 
+        self.assertEqual(self.raw("PUT", escaped, b'{"x":1}')[0], 204)
+        for path in (escaped, plain):
+            self.assertEqual(self.raw("GET", path), (200, b'{"x":1}'), path)
+        self.assertEqual(self.raw("PUT", plain, b'{"x":2}')[0], 204)
+        self.assertEqual(self.raw("GET", escaped), (200, b'{"x":2}'))
+        self.assertEqual(self.raw("DELETE", escaped)[0], 204)
+        self.assertEqual(self.raw("GET", plain)[0], 404)
+
+        status, body = self.raw("GET", "/api/m/dota-replays/docs/y%zz1")
         self.assertEqual(status, 400)
-        self.assertIn(b"invalid", body)
+
+    def test_a_body_over_the_limit_as_sent_answers_413(self):
+        value = b'{"x": "a"}' + b" " * publish.MAX_VALUE
+
+        status, body = self.raw("PUT", "/api/m/dota-replays/docs/c/k", value)
+
+        self.assertEqual(status, 413)
+        self.assertIn(b"too-large", body)
         self.assertEqual(self.hub.documents, {})
 
-        status, body = self.raw("PUT", "/api/m/dota-replays/docs/c/y:1", b"{}")
+    def test_a_value_is_stored_compacted_as_sent(self):
+        sent = b'{ "b": 1.50, "a": "caf\\u00e9", "c": [1, 2] }'
 
-        self.assertEqual(status, 204)
-        self.assertIn(("c", "y:1"), self.hub.documents)
+        self.assertEqual(self.raw("PUT", "/api/m/dota-replays/docs/c/k", sent)[0], 204)
+
+        self.assertEqual(
+            self.raw("GET", "/api/m/dota-replays/docs/c/k"),
+            (200, b'{"b":1.50,"a":"caf\\u00e9","c":[1,2]}'),
+        )
+
+    def test_a_value_holding_nan_answers_400(self):
+        for value in (b'{"x": NaN}', b'{"x": Infinity}'):
+            with self.subTest(value=value):
+                status, body = self.raw("PUT", "/api/m/dota-replays/docs/c/k", value)
+                self.assertEqual(status, 400)
+                self.assertIn(b"invalid", body)
+        self.assertEqual(self.hub.documents, {})
+
+    def test_a_request_without_a_bearer_token_answers_no_token(self):
+        cases = {
+            "basic": ("Basic dXNlcjpwYXNz", "no-token"),
+            "empty bearer": ("Bearer ", "no-token"),
+            "unknown token": ("Bearer sbm_other_token", "invalid-token"),
+        }
+        for label, (authorization, code) in cases.items():
+            with self.subTest(label=label):
+                status, body = self.raw(
+                    "GET", "/api/m/dota-replays/docs/meta", authorization=authorization
+                )
+                self.assertEqual(status, 401)
+                self.assertEqual(json.loads(body)["code"], code)
 
     def test_a_list_page_over_200_answers_400(self):
         status, body = self.raw("GET", "/api/m/dota-replays/docs/meta?limit=201")

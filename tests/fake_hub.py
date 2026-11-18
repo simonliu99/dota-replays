@@ -3,14 +3,30 @@
 It applies the rules switchboard's docs/MODULES.md (Storage) states: a bearer
 token, names of `[A-Za-z0-9._:-]+` at most 128 bytes, 256 KiB per value, 16 MiB
 per module counted as collection, key and value bytes, and a list in key order
-answering `next_after`. Its error bodies are shaped as
-`internal/httpapi/docs.go` and `worker.ErrorAnswer` write them at switchboard
-`0072c500`: `{"code": …, "detail": …}`, the detail left out when it is empty.
+answering `next_after`. It follows the hub's code at switchboard `e4fd19fc`:
+
+- `internal/httpapi/docs.go` `pathParam` decodes each path segment once, so an
+  escaped name such as `y%3A1` names the same document as `y:1`; Go's `net/http`
+  refuses a `%` not followed by two hex digits with a plain 400 before the hub's
+  handler runs, and the fake answers that 400 with an `invalid` body;
+- `putDoc` refuses a body over 256 KiB as sent, before it is parsed;
+- `moduledocs.normalizeValue` stores the body compacted, its keys, numbers and
+  escapes as sent, and refuses anything but one JSON object (NaN included);
+- `routes.go` `moduleGuard` answers 401 `no-token` without a `Bearer` header
+  and 401 `invalid-token` for a token it does not hold.
+
+Its error bodies are shaped as the hub's `fail` writes them:
+`{"code": …, "detail": …}`, the detail left out when it is empty. A route the
+hub does not hold answers 404 here; publish.py sends none.
+
+A segment whose escapes Go would write the same way, such as `%2541`, reaches
+`pathParam` already decoded and is decoded twice by the hub; the fake decodes it
+once, and publish.py sends no `%` in a path.
 """
 
 import json
 import re
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from tests.support import _LocalServer
 
@@ -21,6 +37,8 @@ MAX_NAME = 128
 MAX_LIST_LIMIT = 200
 DEFAULT_LIST_LIMIT = 100
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+$")
+# A % not followed by two hex digits, which Go's net/http refuses with 400.
+BAD_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
 class _Invalid(Exception):
@@ -36,6 +54,8 @@ class FakeHub(_LocalServer):
         # (collection, key) -> the value bytes the store holds.
         self.documents: dict[tuple[str, str], bytes] = {}
         self.requests: list[tuple[str, str]] = []
+        # (method, raw target): each request's path and query as sent.
+        self.targets: list[tuple[str, str]] = []
         # (method, collection, key) -> a status the next request answers.
         self.forced: dict[tuple[str, str, str], int] = {}
         self.updated_ms = 0
@@ -90,6 +110,7 @@ class FakeHub(_LocalServer):
     def handle_request(self, handler, method: str) -> None:
         parsed = urlsplit(handler.path)
         self.requests.append((method, parsed.path))
+        self.targets.append((method, handler.path))
         length = int(handler.headers.get("Content-Length") or 0)
         body = handler.rfile.read(length) if length else b""
         try:
@@ -104,12 +125,17 @@ class FakeHub(_LocalServer):
 
     def answer(self, method: str, parsed, body: bytes, headers):
         authorization = headers.get("Authorization") or ""
-        if not authorization:
-            return 401, _error("no-token")
-        if authorization != f"Bearer {self.token}":
+        presented = (
+            authorization[len("Bearer "):].strip()
+            if authorization.startswith("Bearer ")
+            else ""
+        )
+        if not presented:
+            return 401, _error("no-token", "a bearer token is required")
+        if presented != self.token:
             return 401, _error("invalid-token")
-        # The segments are read raw, as chi's RawPath routing does: a
-        # percent-encoded name reaches the store still encoded and is refused.
+        # chi routes on the raw path, so the segments split there; each is
+        # then decoded once, as the hub's pathParam does.
         parts = parsed.path.split("/")
         if (
             len(parts) not in (6, 7)
@@ -117,10 +143,11 @@ class FakeHub(_LocalServer):
             or parts[4] != "docs"
         ):
             return 404, _error("not-found")
-        module, collection = parts[3], parts[5]
+        module = parts[3]
         if module != self.module:
-            return 403, _error("wrong-module")
-        key = parts[6] if len(parts) == 7 else None
+            return 403, _error("wrong-module", "this token is bound to another module")
+        collection = path_param("collection", parts[5])
+        key = path_param("key", parts[6]) if len(parts) == 7 else None
         check_name("collection", collection)
         if key is not None:
             check_name("key", key)
@@ -179,15 +206,18 @@ class FakeHub(_LocalServer):
     def put(self, collection: str, key: str | None, body: bytes):
         if key is None:
             return 405, _error("not-found")
+        if len(body) > MAX_VALUE:
+            return 413, _error(
+                "too-large", f"a document value is at most {MAX_VALUE} bytes"
+            )
         try:
-            parsed = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            text = body.decode("utf-8")
+            parsed = json.loads(text, parse_constant=_refuse_constant)
+        except (UnicodeDecodeError, ValueError) as error:
             raise _Invalid(f"the value is not a JSON object: {error}")
         if not isinstance(parsed, dict):
             raise _Invalid("the value is not a JSON object")
-        value = json.dumps(
-            parsed, separators=(",", ":"), ensure_ascii=False
-        ).encode("utf-8")
+        value = compact(text).encode("utf-8")
         if len(value) > MAX_VALUE:
             return 413, _error(
                 "too-large", f"a document value is at most {MAX_VALUE} bytes"
@@ -203,6 +233,43 @@ class FakeHub(_LocalServer):
         self.documents[(collection, key)] = value
         self.updated_ms += 1
         return 204, b""
+
+
+def path_param(what: str, raw: str) -> str:
+    """Decode one path segment once, refusing an escape Go would refuse."""
+    if BAD_ESCAPE.search(raw):
+        raise _Invalid(f"the {what} in the path is not validly escaped")
+    return unquote(raw, errors="strict")
+
+
+def _refuse_constant(name: str):
+    """Refuse NaN and Infinity, which Go's JSON decoder does not read."""
+    raise ValueError(f"{name} is not JSON")
+
+
+def compact(text: str) -> str:
+    """Return JSON text without the whitespace between its tokens.
+
+    The rest is kept as sent, as Go's json.Compact keeps it: key order,
+    number forms and escapes such as \\u00e9.
+    """
+    out = []
+    in_string = escaped = False
+    for character in text:
+        if in_string:
+            out.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character in " \t\n\r":
+            continue
+        else:
+            out.append(character)
+            in_string = character == '"'
+    return "".join(out)
 
 
 def check_name(what: str, name: str) -> None:

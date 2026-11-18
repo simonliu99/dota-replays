@@ -336,6 +336,7 @@ class JobEntryTestCase(unittest.TestCase):
         self.assertEqual(os.listdir(self.legacy_copy), [])
 
         replay_name = f"{match_id}.dem.bz2"
+        self.assertTrue((self.replays / replay_name).is_file(), "the update entry downloaded no replay")
         self.assertEqual((self.replays / replay_name).read_bytes(), REPLAY_BODY)
         self.assertEqual(
             self.replay_server.requests, [("GET", f"/570/{replay_name}")]
@@ -1240,30 +1241,107 @@ class DatabaseCopyTestCase(unittest.TestCase):
             self.assertFalse(missing.exists())
             self.assertEqual(os.listdir(self.root), parent_listing)
 
-    def test_a_smaller_database_writes_and_prunes_nothing(self):
+    def seed_fourteen_backups(self):
+        """Seed 14 backups of 2 players and 2 matches; return their bytes."""
         seeded_bytes = {}
         for day in range(1, 15):
             name = f"200101{day:02d}T000000Z"
             path = self.seed_backup(name, players=2, matches=2)
             seeded_bytes[path.name] = path.read_bytes()
+        return seeded_bytes
 
-        live_db_path = self.bulk / "dota_replays.db"
-        self.database.close()
-        live_db_path.unlink()
-        self.database = Database(str(live_db_path))
-        self.database.upsert_player(1, "Only Player")
-        self.insert_matches(1)
+    def assert_backups_unchanged(self, seeded_bytes):
+        for name, data in seeded_bytes.items():
+            self.assertEqual((self.backup_dir / name).read_bytes(), data)
+        self.assertEqual(set(os.listdir(self.backup_dir)), set(seeded_bytes.keys()))
+
+    def desync_index(self, path, change):
+        """Run change on matches in the closed file at path behind its index.
+
+        The index idx_matches_player_id is hidden from the schema while the
+        change runs and restored after, so it no longer matches its table.
+        PRAGMA integrity_check then answers rows naming the index, while the
+        player and match counts still read, so only the integrity verdict
+        refuses the file.
+        """
+        name = "idx_matches_player_id"
+        connection = sqlite3.connect(path)
+        try:
+            entry = connection.execute(
+                "SELECT type, name, tbl_name, rootpage, sql FROM sqlite_master "
+                "WHERE name = ?",
+                (name,),
+            ).fetchone()
+            connection.execute("PRAGMA writable_schema = ON")
+            connection.execute("DELETE FROM sqlite_master WHERE name = ?", (name,))
+            connection.commit()
+        finally:
+            connection.close()
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(change)
+            connection.execute("PRAGMA writable_schema = ON")
+            connection.execute("INSERT INTO sqlite_master VALUES (?, ?, ?, ?, ?)", entry)
+            connection.commit()
+            connection.execute("PRAGMA journal_mode=DELETE")
+            rows = connection.execute("PRAGMA integrity_check").fetchall()
+        finally:
+            connection.close()
+        self.assertNotEqual(rows, [("ok",)])
+
+    def test_a_database_with_fewer_matches_writes_and_prunes_nothing(self):
+        seeded_bytes = self.seed_fourteen_backups()
+        self.database.conn.execute("DELETE FROM matches WHERE match_id = 1001")
+        self.database.conn.commit()
 
         with self.assertLogs("db_copy", level="ERROR") as captured:
             self.assertEqual(db_copy.main([]), 1)
 
-        for name, data in seeded_bytes.items():
-            self.assertEqual((self.backup_dir / name).read_bytes(), data)
-        self.assertEqual(set(os.listdir(self.backup_dir)), set(seeded_bytes.keys()))
-        self.assertFalse(any(n.endswith(".part") for n in os.listdir(self.backup_dir)))
+        self.assert_backups_unchanged(seeded_bytes)
         output_str = "\n".join(captured.output)
-        self.assertIn("1 matches", output_str)
-        self.assertIn("2 matches", output_str)
+        self.assertIn("live has 2 players and 1 matches", output_str)
+        self.assertIn("has 2 players and 2 matches", output_str)
+
+    def test_a_database_with_fewer_players_writes_and_prunes_nothing(self):
+        seeded_bytes = self.seed_fourteen_backups()
+        self.database.conn.execute("DELETE FROM players WHERE player_id = 2")
+        self.database.conn.commit()
+
+        with self.assertLogs("db_copy", level="ERROR") as captured:
+            self.assertEqual(db_copy.main([]), 1)
+
+        self.assert_backups_unchanged(seeded_bytes)
+        output_str = "\n".join(captured.output)
+        self.assertIn("live has 1 players and 2 matches", output_str)
+
+    def test_a_corrupt_newest_backup_writes_and_prunes_nothing(self):
+        seeded_bytes = self.seed_fourteen_backups()
+        newest = self.backup_dir / "dota_replays-20010114T000000Z.db"
+        self.desync_index(newest, "DELETE FROM matches WHERE match_id = 2001")
+        seeded_bytes[newest.name] = newest.read_bytes()
+
+        with self.assertLogs("db_copy", level="ERROR") as captured:
+            self.assertEqual(db_copy.main([]), 1)
+
+        self.assert_backups_unchanged(seeded_bytes)
+        self.assertIn("Integrity check failed for earlier backup", "\n".join(captured.output))
+
+    def test_a_corrupt_database_writes_no_backup(self):
+        seeded_bytes = {}
+        path = self.seed_backup("20010101T000000Z", players=2, matches=2)
+        seeded_bytes[path.name] = path.read_bytes()
+        live_db_path = self.bulk / "dota_replays.db"
+        self.database.close()
+        self.desync_index(
+            live_db_path,
+            "INSERT INTO matches (match_id, player_id, start_time) VALUES (1003, 1, 0)",
+        )
+
+        with self.assertLogs("db_copy", level="ERROR") as captured:
+            self.assertEqual(db_copy.main([]), 1)
+
+        self.assert_backups_unchanged(seeded_bytes)
+        self.assertIn("integrity check failed", "\n".join(captured.output))
 
     def test_a_refused_shrink_still_refuses_on_the_next_run(self):
         seeded_bytes = {}
@@ -1361,6 +1439,16 @@ class DatabaseCopyTestCase(unittest.TestCase):
         self.seed_backup(fresh_stamp)
         result_fresh = self.run_check()
         self.assertEqual(result_fresh.returncode, 0, result_fresh.stderr)
+
+    def test_check_fails_when_the_database_lost_players(self):
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.seed_backup(stamp, players=2, matches=2)
+        self.database.conn.execute("DELETE FROM players WHERE player_id = 2")
+        self.database.conn.commit()
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Database lost records", result.stderr)
+        self.assertIn("live has 1 players and 2 matches", result.stderr)
 
     def test_check_fails_when_the_database_lost_matches(self):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
