@@ -41,6 +41,9 @@ lists the variables; a `.env` file is read only when the optional
 
 ## Technical notes
 
+- A replay is stored under the suffix of its real format: Valve serves bzip2 or
+  zstd bodies, so the folder holds `.dem.bz2` and `.dem.zst` files. `bzip2 -d`
+  opens the first and `zstd -d` the second.
 - The switchboard jobs, the worker's setup, the weekly trigger and the
   database's folder are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - Keep the database on a local disk: SQLite's file locking is not safe on NFS.
