@@ -169,10 +169,19 @@ class RecordedOpenDota(_LocalServer):
 class ReplayServer(_LocalServer):
     """Serve one replay body, optionally cutting the first attempt short."""
 
-    def __init__(self, body: bytes, truncate_first: bool = False, status: int = 200):
+    def __init__(
+        self,
+        body: bytes,
+        truncate_first: bool = False,
+        status: int = 200,
+        content_encoding: str | None = None,
+        content_type: str = "application/x-bzip2",
+    ):
         self.body = body
         self.truncate_first = truncate_first
         self.status = status
+        self.content_encoding = content_encoding
+        self.content_type = content_type
         self.requests: list[tuple[str, str]] = []
         super().__init__()
 
@@ -185,7 +194,9 @@ class ReplayServer(_LocalServer):
             handler.end_headers()
             return
         handler.send_response(200)
-        handler.send_header("Content-Type", "application/x-bzip2")
+        handler.send_header("Content-Type", self.content_type)
+        if self.content_encoding is not None:
+            handler.send_header("Content-Encoding", self.content_encoding)
         handler.send_header("Content-Length", str(len(self.body)))
         handler.end_headers()
         if self.truncate_first and len(self.requests) == 1:

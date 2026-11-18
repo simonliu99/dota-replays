@@ -13,7 +13,9 @@ from tests.support import ReplayServer, WorkingDirectory, closed_port
 
 PLAYER_ID = 1
 MATCH_ID = 8554321
-BODY = bytes(value % 256 for value in range(200_000))
+BZIP2_MAGIC = b"BZh"
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+BODY = BZIP2_MAGIC + bytes(value % 256 for value in range(200_000))
 
 
 class ReplayDownloadTestCase(unittest.TestCase):
@@ -36,28 +38,29 @@ class ReplayDownloadTestCase(unittest.TestCase):
     def target(self) -> Path:
         return self.replay_dir / f"{MATCH_ID}.dem.bz2"
 
+    def zst_target(self) -> Path:
+        return self.replay_dir / f"{MATCH_ID}.dem.zst"
+
     def part(self) -> Path:
         target = self.target()
         return target.with_name(f"{target.name}.part")
 
+    def match_row(self, match_id: int) -> dict:
+        return {
+            "match_id": match_id,
+            "start_time": int(time.time()),
+            "duration": 1200,
+            "hero_id": 1,
+            "kills": 0,
+            "deaths": 0,
+            "assists": 0,
+            "radiant_win": True,
+            "player_slot": 0,
+        }
+
     def seed(self, replay_url: str) -> None:
         self.db.upsert_player(PLAYER_ID, "Test Player")
-        self.db.insert_matches(
-            PLAYER_ID,
-            [
-                {
-                    "match_id": MATCH_ID,
-                    "start_time": int(time.time()),
-                    "duration": 1200,
-                    "hero_id": 1,
-                    "kills": 0,
-                    "deaths": 0,
-                    "assists": 0,
-                    "radiant_win": True,
-                    "player_slot": 0,
-                }
-            ],
-        )
+        self.db.insert_matches(PLAYER_ID, [self.match_row(MATCH_ID)])
         self.db.upsert_match_details(
             MATCH_ID,
             {"match_id": MATCH_ID, "version": 21, "replay_url": replay_url},
@@ -133,6 +136,113 @@ class ReplayDownloadTestCase(unittest.TestCase):
         self.assertEqual(self.target().read_bytes(), BODY)
         self.assertEqual(
             [row["file_size"] for row in self.db.get_downloads()], [len(BODY)]
+        )
+
+    def test_a_zstd_body_at_a_bz2_url_is_stored_as_dem_zst(self):
+        body = ZSTD_MAGIC + b"a zstd body"
+        server = ReplayServer(body)
+        self.addCleanup(server.close)
+        self.seed(f"{server.base_url}/570/{MATCH_ID}.dem.bz2")
+        app = self.app()
+
+        app._download_replays()
+
+        self.assertTrue(self.zst_target().is_file())
+        self.assertEqual(self.zst_target().read_bytes(), body)
+        self.assertFalse(self.target().exists())
+        self.assertFalse(self.part().exists())
+        self.assertEqual(
+            [row["filename"] for row in self.db.get_downloads()],
+            [f"{MATCH_ID}.dem.zst"],
+        )
+        self.assertEqual(len(server.requests), 1)
+
+    def test_an_unknown_body_leaves_no_replay_and_records_an_attempt(self):
+        server = ReplayServer(b"<html>not a replay</html>")
+        self.addCleanup(server.close)
+        self.seed(f"{server.base_url}/570/{MATCH_ID}.dem.bz2")
+        app = self.app()
+
+        app._download_replays()
+
+        self.assertEqual(os.listdir(self.replay_dir), [])
+        self.assertEqual(self.db.get_downloads(), [])
+        attempt = self.db.get_download_attempt(MATCH_ID)
+        self.assertIsNotNone(attempt)
+        self.assertEqual(attempt["attempt_count"], 1)
+        self.assertIn("unknown replay format", attempt["last_error"])
+
+    def test_a_content_encoded_response_is_refused(self):
+        server = ReplayServer(BODY, content_encoding="zstd")
+        self.addCleanup(server.close)
+        self.seed(f"{server.base_url}/570/{MATCH_ID}.dem.bz2")
+        app = self.app()
+
+        app._download_replays()
+
+        self.assertEqual(os.listdir(self.replay_dir), [])
+        self.assertEqual(self.db.get_downloads(), [])
+        attempt = self.db.get_download_attempt(MATCH_ID)
+        self.assertIsNotNone(attempt)
+        self.assertIn("unexpected Content-Encoding", attempt["last_error"])
+
+    def test_redownload_stores_a_zstd_body_as_dem_zst(self):
+        body = ZSTD_MAGIC + b"a zstd body"
+        server = ReplayServer(body)
+        self.addCleanup(server.close)
+        filename = f"{MATCH_ID}.dem.bz2"
+        self.seed(f"{server.base_url}/570/{filename}")
+        self.db.record_download(MATCH_ID, filename, len(body))
+        app = self.app()
+
+        app.verify_downloads(redownload=True)
+
+        self.assertTrue(self.zst_target().is_file())
+        self.assertEqual(self.zst_target().read_bytes(), body)
+        self.assertFalse(self.target().exists())
+        self.assertEqual(
+            [row["filename"] for row in self.db.get_downloads()],
+            [f"{MATCH_ID}.dem.zst"],
+        )
+        self.assertEqual(len(server.requests), 1)
+
+    def test_a_dem_zst_already_on_disk_is_recorded_without_a_request(self):
+        server = ReplayServer(ZSTD_MAGIC + b"a zstd body")
+        self.addCleanup(server.close)
+        self.seed(f"{server.base_url}/570/{MATCH_ID}.dem.bz2")
+        app = self.app()
+        body = ZSTD_MAGIC + b"already here"
+        self.zst_target().write_bytes(body)
+
+        app._download_replays()
+
+        self.assertEqual(server.requests, [])
+        self.assertEqual(
+            [(row["filename"], row["file_size"]) for row in self.db.get_downloads()],
+            [(f"{MATCH_ID}.dem.zst", len(body))],
+        )
+
+    def test_scan_registers_dem_zst_files(self):
+        other_match = MATCH_ID + 1
+        self.seed(f"http://replay.invalid/570/{MATCH_ID}.dem.bz2")
+        self.db.insert_matches(PLAYER_ID, [self.match_row(other_match)])
+        self.db.upsert_match_details(
+            other_match,
+            {
+                "match_id": other_match,
+                "version": 21,
+                "replay_url": "http://replay.invalid/570/abcd_205.dem.bz2",
+            },
+        )
+        app = self.app()
+        self.zst_target().write_bytes(ZSTD_MAGIC + b"one")
+        (self.replay_dir / "abcd_205.dem.zst").write_bytes(ZSTD_MAGIC + b"two")
+
+        app.scan_replay_directory()
+
+        self.assertEqual(
+            {row["match_id"]: row["filename"] for row in self.db.get_downloads()},
+            {MATCH_ID: f"{MATCH_ID}.dem.zst", other_match: "abcd_205.dem.zst"},
         )
 
 
