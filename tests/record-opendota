@@ -4,10 +4,17 @@
 Run by hand when the fixture needs to be refreshed, with no API key:
 
     tests/record-opendota [player_id]
+    tests/record-opendota --parse
 
-The script asks for the player's profile, the player's newest match and that
-match's details, then stores each answer with the path the fake serves it
+The first form asks for the player's profile, the player's newest match and
+that match's details, then stores each answer with the path the fake serves it
 from. The fake's messages therefore come from a real response.
+
+The --parse form asks OpenDota to parse the recorded match once (POST
+/request/{match_id}), then polls GET /request/{jobId} every POLL_DELAY seconds
+until the answer is null or POLL_LIMIT polls have passed, and writes every
+answer in order to tests/fixtures/opendota-parse.json. A parse request costs
+OpenDota ten calls of its rate limit.
 """
 
 import json
@@ -25,13 +32,18 @@ MATCH_LIMIT = 1
 DELAY = 1.0  # no API key: stay under 60 requests a minute
 TIMEOUT = 30
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "opendota.json"
+PARSE_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "opendota-parse.json"
+PARSE_DELAY = 10.0  # a parse request counts as ten calls
+POLL_DELAY = 20.0
+POLL_LIMIT = 15
 
 
-def get(path: str) -> dict:
-    """Fetch one API path and return it as a fixture entry."""
+def get(path: str, method: str = "GET") -> dict:
+    """Send one API request and return it as a fixture entry."""
     url = f"{API}{path}"
     request = urllib.request.Request(
         url,
+        method=method,
         headers={"Accept": "application/json", "User-Agent": "dota-replays/record-opendota"},
     )
     with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
@@ -41,6 +53,7 @@ def get(path: str) -> dict:
     if status != 200:
         raise SystemExit(f"{url} answered {status}: {body[:200]!r}")
     return {
+        "method": method,
         "url": url,
         "path": urlsplit(url).path,
         "status": status,
@@ -48,7 +61,42 @@ def get(path: str) -> dict:
     }
 
 
+def record_parse() -> None:
+    """Record one parse request for the fixture's match and its polls."""
+    match_id = json.loads(FIXTURE.read_text(encoding="utf-8"))["match_ids"][0]
+    responses = [get(f"/request/{match_id}", method="POST")]
+    time.sleep(PARSE_DELAY)
+    job = (responses[0]["body"] or {}).get("job") or {}
+    job_id = job.get("jobId")
+    if not job_id:
+        raise SystemExit(f"the parse request answered no jobId: {responses[0]['body']!r}")
+    for _ in range(POLL_LIMIT):
+        poll = get(f"/request/{job_id}")
+        responses.append(poll)
+        if poll["body"] is None:
+            break
+        time.sleep(POLL_DELAY)
+    for response in responses:
+        print(f"{response['method']} {response['status']} {response['url']}: "
+              f"{json.dumps(response['body'])[:200]}")
+    if responses[-1]["body"] is not None:
+        raise SystemExit(f"job {job_id} was not finished after {POLL_LIMIT} polls; "
+                         "nothing written")
+    fixture = {
+        "source": API,
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "match_id": match_id,
+        "job_id": job_id,
+        "responses": responses,
+    }
+    PARSE_FIXTURE.write_text(json.dumps(fixture, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote {PARSE_FIXTURE}")
+
+
 def main() -> None:
+    if sys.argv[1:] == ["--parse"]:
+        record_parse()
+        return
     player_id = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PLAYER_ID
 
     responses = [get(f"/players/{player_id}")]

@@ -12,6 +12,7 @@ from database import Database
 from dota_replays import DotaReplays
 from tests.support import (
     FIXTURE_PATH,
+    PARSE_FIXTURE_PATH,
     RecordedOpenDota,
     WorkingDirectory,
     closed_port,
@@ -157,6 +158,31 @@ class FakeOpenDotaTestCase(unittest.TestCase):
         self.assertIsNone(client.get_player_matches(self.player_id))
         self.assertEqual(client.failed_requests, 2)
 
+    def test_a_rate_limit_the_wait_clears_answers_the_fetch(self):
+        self.server.fail_next(self.player_path(), [429] * 4)
+        client = self.client()
+        with mock.patch.object(opendota_client.time, "sleep") as sleep:
+            player = client.get_player(self.player_id)
+
+        self.assertIsNotNone(player)
+        self.assertEqual(
+            [method for method, path in self.server.requests if path == self.player_path()],
+            ["GET"] * 5,
+        )
+        delays = [call.args[0] for call in sleep.call_args_list if call.args]
+        self.assertEqual(delays.count(60), 1)
+        self.assertEqual(client.failed_requests, 0)
+
+    def test_the_match_list_asks_for_its_limit(self):
+        client = self.client()
+
+        self.assertIsNotNone(client.get_player_matches(self.player_id, limit=100))
+
+        self.assertEqual(
+            [target for _, target, _ in self.server.targets],
+            [f"{self.matches_path()}?limit=100"],
+        )
+
     def test_repeated_server_errors_fail_the_fetch(self):
         self.server.fail_next(self.match_path(), [500, 500, 500, 500])
         client = self.client()
@@ -172,6 +198,48 @@ class FakeOpenDotaTestCase(unittest.TestCase):
         self.assertIn(1, delays)
         self.assertIn(2, delays)
         self.assertIn(4, delays)
+
+
+class ParsePathTestCase(unittest.TestCase):
+    """The parse request and its polls, against the recorded parse answers."""
+
+    def setUp(self):
+        self.server = RecordedOpenDota(FIXTURE_PATH)
+        self.addCleanup(self.server.close)
+        self.parse = load_fixture(PARSE_FIXTURE_PATH)
+        self.match_id = self.parse["match_id"]
+        self.job_id = self.parse["job_id"]
+        self.polls = [
+            entry["body"] for entry in self.parse["responses"] if entry["method"] == "GET"
+        ]
+
+    def client(self) -> opendota_client.OpenDotaClient:
+        return opendota_client.OpenDotaClient(base_url=f"{self.server.base_url}/api")
+
+    def test_a_parse_request_answers_the_recorded_job_id_and_waits_ten_seconds(self):
+        client = self.client()
+        with mock.patch.object(opendota_client.time, "sleep") as sleep:
+            job_id = client.request_parse(self.match_id)
+
+        self.assertEqual(job_id, self.job_id)
+        self.assertEqual(self.server.requests, [("POST", f"/api/request/{self.match_id}")])
+        delays = [call.args[0] for call in sleep.call_args_list if call.args]
+        self.assertIn(10.0, delays)
+        self.assertEqual(client.failed_requests, 0)
+
+    def test_the_poll_waits_until_the_recorded_job_is_gone(self):
+        # tests/record-opendota --parse polls until OpenDota answers null.
+        polls = self.polls.index(None) + 1
+        client = self.client()
+        with mock.patch.object(opendota_client.time, "sleep") as sleep:
+            done = client.poll_parse_completion(self.job_id, timeout=300, poll_interval=20)
+
+        self.assertTrue(done)
+        self.assertEqual(
+            self.server.requests, [("GET", f"/api/request/{self.job_id}")] * polls
+        )
+        delays = [call.args[0] for call in sleep.call_args_list if call.args]
+        self.assertEqual(delays.count(20), polls - 1)
 
 
 if __name__ == "__main__":

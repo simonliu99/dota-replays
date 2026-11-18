@@ -15,6 +15,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "opendota.json"
+# tests/record-opendota --parse wrote this: one parse request and its polls.
+PARSE_FIXTURE_PATH = FIXTURE_PATH.with_name("opendota-parse.json")
 
 
 def closed_port() -> int:
@@ -115,17 +117,30 @@ class _LocalServer:
 
 
 class RecordedOpenDota(_LocalServer):
-    """Serve the recorded OpenDota answers, with injectable failures."""
+    """Serve the recorded OpenDota answers, with injectable failures.
 
-    def __init__(self, fixture_path: str | Path = FIXTURE_PATH):
+    `responses` holds the GET answers by path. The parse fixture's answers are
+    kept by method and path and served in their recorded order, the last one
+    repeating. `targets` records each request's method, raw target (path and
+    query) and headers, as the client sent them.
+    """
+
+    def __init__(self, fixture_path: str | Path = FIXTURE_PATH,
+                 parse_fixture_path: str | Path = PARSE_FIXTURE_PATH):
         self.fixture = load_fixture(fixture_path)
         self.responses = {
             entry["path"]: entry["body"] for entry in self.fixture["responses"]
         }
+        self.parse_fixture = load_fixture(parse_fixture_path)
+        self.sequences: dict[tuple[str, str], list] = {}
+        for entry in self.parse_fixture["responses"]:
+            key = (entry["method"], entry["path"])
+            self.sequences.setdefault(key, []).append(entry["body"])
         self.failures: dict[tuple[str, str], list[int]] = {}
         self.truncations: dict[str, int] = {}
         self.raw: dict[str, tuple[str, bytes]] = {}
         self.requests: list[tuple[str, str]] = []
+        self.targets: list[tuple[str, str, dict[str, str]]] = []
         super().__init__()
 
     def fail_next(self, path: str, statuses: list[int], method: str = "GET") -> None:
@@ -151,10 +166,19 @@ class RecordedOpenDota(_LocalServer):
     def handle_request(self, handler: BaseHTTPRequestHandler, method: str) -> None:
         path = urlsplit(handler.path).path
         self.requests.append((method, path))
+        self.targets.append((method, handler.path, dict(handler.headers.items())))
         statuses = self.failures.get((method, path))
         if statuses:
             status = statuses.pop(0)
             self._write(handler, status, b'{"error": "injected failure"}')
+            return
+        sequence = self.sequences.get((method, path))
+        if sequence:
+            body = sequence.pop(0) if len(sequence) > 1 else sequence[0]
+            self._write(handler, 200, json.dumps(body).encode("utf-8"))
+            return
+        if method != "GET":
+            self._write(handler, 404, b'{"error": "not recorded"}')
             return
         if path in self.raw:
             content_type, body = self.raw[path]

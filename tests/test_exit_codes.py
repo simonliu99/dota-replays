@@ -47,12 +47,18 @@ def match(match_id: int, age_days: int = 0) -> dict:
     }
 
 
+# An answer that carried nothing: a refused connection, or a 5xx the retries
+# did not clear.
+FAILED = object()
+
+
 class FakeClient:
     """An OpenDotaClient stand-in answering only what the test records.
 
-    A player, match list, set of details or parse answer the test left out is
-    answered None and counted in failed_requests, as the real client counts a
-    fetch that carried nothing.
+    It counts failed_requests as the real client does. An answer the test
+    left out is a 404: None, and not counted, except a parse request, which
+    the real client counts when it is refused. An answer of FAILED is None
+    and counted, as the real client counts a fetch that carried nothing.
     """
 
     def __init__(
@@ -86,12 +92,16 @@ class FakeClient:
 
     def request_parse(self, match_id: int) -> int | None:
         self.parse_calls.append(match_id)
-        return self._record(self.parses.get(match_id))
+        answer = self._record(self.parses.get(match_id))
+        if answer is None and self.parses.get(match_id) is not FAILED:
+            self.failed_requests += 1
+        return answer
 
     def _record(self, answer):
-        """Return the answer, counting one failed fetch when it is None."""
-        if answer is None:
+        """Return the answer, counting one failed fetch for FAILED."""
+        if answer is FAILED:
             self.failed_requests += 1
+            return None
         return answer
 
 
@@ -193,6 +203,7 @@ class ExitCodeTestCase(unittest.TestCase):
             matches={PLAYER_A: [match(match_id) for match_id in MATCH_IDS]},
             details={
                 MATCH_IDS[0]: {"match_id": MATCH_IDS[0], "version": 21},
+                MATCH_IDS[1]: FAILED,
                 MATCH_IDS[2]: {"match_id": MATCH_IDS[2], "version": 21},
             },
         )
@@ -225,6 +236,7 @@ class ExitCodeTestCase(unittest.TestCase):
             players={},
             details={
                 MATCH_IDS[0]: stored[MATCH_IDS[0]],
+                MATCH_IDS[1]: FAILED,
                 MATCH_IDS[2]: stored[MATCH_IDS[2]],
             },
         )
@@ -247,6 +259,27 @@ class ExitCodeTestCase(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(client.parse_calls, [UNPARSED_MATCH])
         self.assertIn("1 failed request", output[-1])
+
+    def test_a_recheck_whose_parse_request_is_refused_exits_one(self):
+        server, _ = self.recorded()
+        db = self.seed_players([PLAYER_A])
+        db.insert_matches(PLAYER_A, [match(UNPARSED_MATCH)])
+        db.upsert_match_details(UNPARSED_MATCH, {"match_id": UNPARSED_MATCH})
+        path = f"/api/request/{UNPARSED_MATCH}"
+        cases = {"refused": [404], "server errors": [500] * 4}
+        for label, statuses in cases.items():
+            with self.subTest(label=label):
+                server.requests.clear()
+                server.fail_next(path, statuses, method="POST")
+                client = opendota_client.OpenDotaClient(base_url=f"{server.base_url}/api")
+
+                with mock.patch.object(opendota_client.time, "sleep"):
+                    code, output = self.run_main("--recheck-parsing", client=client)
+
+                self.assertEqual(code, 1)
+                self.assertEqual(server.requests, [("POST", path)] * len(statuses))
+                self.assertIn("1 failed request", output[-1])
+                self.assertNotIn("failed requests", output[-1])
 
     def test_a_refresh_against_a_refused_connection_exits_one(self):
         db = self.seed_players([PLAYER_A])
