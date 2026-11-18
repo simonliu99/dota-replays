@@ -118,6 +118,7 @@ class RecordedOpenDota(_LocalServer):
         }
         self.failures: dict[tuple[str, str], list[int]] = {}
         self.truncations: dict[str, int] = {}
+        self.raw: dict[str, tuple[str, bytes]] = {}
         self.requests: list[tuple[str, str]] = []
         super().__init__()
 
@@ -129,9 +130,14 @@ class RecordedOpenDota(_LocalServer):
         """Send the next times answers for path with their body cut short."""
         self.truncations[path] = times
 
-    def _write(self, handler: BaseHTTPRequestHandler, status: int, body: bytes) -> None:
+    def answer_raw(self, path: str, body: bytes, content_type: str = "text/html") -> None:
+        """Answer every request for path with 200 and this body, JSON or not."""
+        self.raw[path] = (content_type, body)
+
+    def _write(self, handler: BaseHTTPRequestHandler, status: int, body: bytes,
+               content_type: str = "application/json") -> None:
         handler.send_response(status)
-        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Type", content_type)
         handler.send_header("Content-Length", str(len(body)))
         handler.end_headers()
         handler.wfile.write(body)
@@ -143,6 +149,10 @@ class RecordedOpenDota(_LocalServer):
         if statuses:
             status = statuses.pop(0)
             self._write(handler, status, b'{"error": "injected failure"}')
+            return
+        if path in self.raw:
+            content_type, body = self.raw[path]
+            self._write(handler, 200, body, content_type)
             return
         if path not in self.responses:
             self._write(handler, 404, b'{"error": "not recorded"}')

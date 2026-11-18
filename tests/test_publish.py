@@ -599,6 +599,19 @@ class PublishTestCase(unittest.TestCase):
         self.assertIn("Could not read OpenDota's hero constants (timed out)", log)
         self.assertEqual(self.hub.document("meta", "heroes"), stored)
 
+    def test_a_hero_fetch_rate_limit_keeps_the_stored_heroes(self):
+        self.seed_golden()
+        self.assertEqual(self.run_main()[0], 0)
+        stored = self.hub.document("meta", "heroes")
+        self.opendota.fail_next("/api/heroes", [429] * 8)
+
+        with mock.patch("opendota_client.time.sleep"):
+            code, log = self.run_main(published_ms=PUBLISHED_MS + 60_000)
+
+        self.assertEqual(code, 0, log)
+        self.assertIn("still answered 429", log)
+        self.assertEqual(self.hub.document("meta", "heroes"), stored)
+
     def test_a_replay_file_is_the_recorded_name_or_null(self):
         self.seed_golden()
 

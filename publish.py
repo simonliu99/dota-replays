@@ -28,7 +28,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from opendota_client import OpenDotaClient
+from opendota_client import OpenDotaClient, RateLimited
 
 logging.basicConfig(
     level=logging.INFO,
@@ -687,7 +687,7 @@ def main(argv: list[str] | None = None) -> int:
                 heroes = OpenDotaClient(
                     base_url=os.environ.get("OPENDOTA_BASE_URL")
                 ).get_heroes()
-            except (OSError, ValueError) as error:
+            except (OSError, ValueError, RateLimited) as error:
                 logger.warning(
                     f"Could not read OpenDota's hero constants ({error}); "
                     "meta/heroes keeps the store's value"

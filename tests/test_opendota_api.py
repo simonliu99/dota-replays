@@ -133,6 +133,30 @@ class FakeOpenDotaTestCase(unittest.TestCase):
         self.assertIn(1, delays)
         self.assertNotIn(60, delays)
 
+    def test_a_rate_limit_after_the_wait_raises_rate_limited(self):
+        self.server.fail_next(self.player_path(), [429] * 8)
+        client = self.client()
+        with mock.patch.object(opendota_client.time, "sleep") as sleep:
+            with self.assertRaises(opendota_client.RateLimited):
+                client.get_player(self.player_id)
+
+        self.assertEqual(
+            [method for method, path in self.server.requests if path == self.player_path()],
+            ["GET"] * 8,
+        )
+        delays = [call.args[0] for call in sleep.call_args_list if call.args]
+        self.assertEqual(delays.count(60), 1)
+        self.assertEqual(client.failed_requests, 1)
+
+    def test_an_answer_of_the_wrong_json_type_is_a_failed_fetch(self):
+        self.server.responses[self.player_path()] = ["not", "a", "profile"]
+        self.server.answer_raw(self.matches_path(), b"{}", "application/json")
+        client = self.client()
+
+        self.assertIsNone(client.get_player(self.player_id))
+        self.assertIsNone(client.get_player_matches(self.player_id))
+        self.assertEqual(client.failed_requests, 2)
+
     def test_repeated_server_errors_fail_the_fetch(self):
         self.server.fail_next(self.match_path(), [500, 500, 500, 500])
         client = self.client()

@@ -410,6 +410,61 @@ class ExitCodeTestCase(unittest.TestCase):
         self.assertIn(f"/api/players/{PLAYER_B}", requested)
         self.assertIn("2 failed player updates", output[-1])
 
+    def test_a_rate_limit_that_outlasts_the_wait_stops_the_run(self):
+        # Players are updated in id order, so PLAYER_B goes first.
+        server, player_id = self.recorded()
+        player_path = f"/api/players/{PLAYER_B}"
+        server.fail_next(player_path, [429] * 8)
+        replays = ReplayServer(b"BZh" + b"a replay body")
+        self.addCleanup(replays.close)
+        db = self.seed_players([player_id, PLAYER_B])
+        db.insert_matches(PLAYER_B, [match(MATCH_IDS[0])])
+        db.upsert_match_details(
+            MATCH_IDS[0],
+            {
+                "match_id": MATCH_IDS[0],
+                "version": 21,
+                "replay_url": f"{replays.base_url}/570/{MATCH_IDS[0]}.dem.bz2",
+            },
+        )
+        client = opendota_client.OpenDotaClient(base_url=f"{server.base_url}/api")
+
+        with mock.patch.object(opendota_client.time, "sleep") as sleep:
+            code, output = self.run_main(client=client)
+
+        self.assertEqual(code, 1)
+        requested = [path for _, path in server.requests]
+        self.assertEqual(requested, [player_path] * 8)
+        self.assertNotIn(f"/api/players/{player_id}", requested)
+        delays = [call.args[0] for call in sleep.call_args_list if call.args]
+        self.assertEqual(delays.count(60), 1)
+        self.assertIn("Stopped asking OpenDota for this run", "\n".join(output))
+        self.assertIn("1 failed request", output[-1])
+        self.assertEqual(len(replays.requests), 1)
+        self.assertEqual(
+            (self.replay_dir / f"{MATCH_IDS[0]}.dem.bz2").read_bytes(), replays.body
+        )
+
+    def test_a_200_that_is_not_json_fails_the_run_and_the_next_player_is_fetched(self):
+        # Players are updated in id order, so PLAYER_B answers first.
+        server, player_id = self.recorded()
+        server.answer_raw(
+            f"/api/players/{PLAYER_B}", b"<html>Just a moment...</html>"
+        )
+        self.seed_players([player_id, PLAYER_B])
+        client = opendota_client.OpenDotaClient(base_url=f"{server.base_url}/api")
+
+        try:
+            code, output = self.run_main(client=client)
+        except ValueError as error:
+            self.fail(f"the run stopped at the answer that is not JSON: {error!r}")
+
+        self.assertEqual(code, 1)
+        requested = [path for _, path in server.requests]
+        self.assertIn(f"/api/players/{PLAYER_B}", requested)
+        self.assertIn(f"/api/players/{player_id}/matches", requested)
+        self.assertIn("1 failed player update, 1 failed request", output[-1])
+
     def test_a_truncated_player_answer_logs_its_error(self):
         server, player_id = self.recorded()
         server.truncate_next(f"/api/players/{player_id}")
