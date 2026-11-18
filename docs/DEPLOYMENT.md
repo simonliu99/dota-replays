@@ -4,7 +4,8 @@ A switchboard worker on the Maryland node runs the jobs in `jobs/`. The
 database lives on the node's local disk at `$SWITCHBOARD_BULK/dota_replays.db`,
 because SQLite's locking is not safe on a network share. The replays and
 dated backups of the database are on TrueNAS. A failed backup leaves earlier
-backups in place. The dev Mac submits `update` once a week.
+backups in place. The hub schedule `dota-replays-update` submits `update` once
+a week.
 
 ## Jobs
 
@@ -90,25 +91,47 @@ Accepting a smaller database (a restore from a backup older than the newest, a h
 
 ## Weekly trigger
 
-`switchboard/dev.dota-replays.update.plist` is a LaunchAgent for the dev Mac
-that submits `update` every Thursday at 05:30 Pacific. launchd runs a time
-missed while the Mac slept at its next wake, and `--not-before 05:00` refuses a
-wake before 05:00, so that week's run waits for the following Thursday.
+The hub schedule `dota-replays-update` submits `update` every 604,800 seconds
+from a Thursday 05:30 Pacific slot: 13:30 UTC, which is 05:30 PST and 06:30
+PDT. It is pinned to one commit of `master`, so a merge to `master` reaches
+the weekly run only when the coordinator re-adds the schedule pinned to the new
+head. Re-adding under the same name replaces the schedule.
 
-1. Approve the Mac's agent binding once, by running
-   `switchboard client request --agent --hub https://<hub> --wait` and approving
-   its code on the hub's Access page.
-2. Edit the plist: `--hub` names the hub, and the script path must match the
-   Mac.
-3. Install it:
+The coordinator re-adds it from the dev Mac, whose agent binding becomes the
+schedule's creator. Approve that binding once, by running
+`switchboard client request --agent --hub https://<hub> --wait` and approving its
+code on the hub's Access page. Revoking the binding pauses the schedule, and a
+paused schedule whose creator is revoked cannot be resumed: re-add it instead.
 
-   ```bash
-   cp switchboard/dev.dota-replays.update.plist ~/Library/LaunchAgents/
-   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.dota-replays.update.plist
-   ```
+To re-add the schedule, set the two values at the top and run the script with
+`sh`:
 
-Its output goes to `~/Library/Logs/dota-replays-update.log`. To submit a job by
-hand:
+```sh
+#!/bin/sh
+# Re-add the weekly update schedule, pinned to master's head.
+set -eu
+HUB=      # the hub's URL
+FIRST=    # the next Thursday 13:30 UTC, in the future, e.g. 2026-11-26T13:30:00Z
+REPO=simonliu99/dota-replays
+[ -n "$HUB" ] || { echo "set HUB" >&2; exit 2; }
+[ -n "$FIRST" ] || { echo "set FIRST" >&2; exit 2; }
+HEAD=$(gh api "repos/$REPO/commits/master" --jq .sha)
+TREE=$(gh api "repos/$REPO/git/commits/$HEAD" --jq .tree.sha)
+switchboard schedule add --hub "$HUB" --name dota-replays-update \
+    --every 604800 --first "$FIRST" \
+    --project dota-replays --task update --code git \
+    --repo "$REPO" --url https://github.com/simonliu99/dota-replays.git \
+    --base "$HEAD" --commit "$HEAD" --tree "$TREE" \
+    --entry jobs/update --gres bulk-dota-replays=1 \
+    --backstop 10800 --quiet 600
+switchboard schedule list --hub "$HUB"
+```
+
+`add` prints `dota-replays-update`, and `list` prints a line beginning
+`dota-replays-update task=update every_s=604800 next=<a Thursday>T13:30:00Z paused=false`.
+The hub refuses a `FIRST` in the past.
+
+To submit a job by hand:
 
 ```bash
 scripts/switchboard-submit --hub https://<hub> update
