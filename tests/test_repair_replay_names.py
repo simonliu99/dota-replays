@@ -168,8 +168,8 @@ class RepairReplayNamesTestCase(unittest.TestCase):
 
         code, output = self.run_main("--apply")
 
-        self.assertEqual((self.folder / "6_6.dem.bz2").read_bytes(), ZSTD_MAGIC + b"a")
         self.assertEqual((self.folder / "6_6.dem.zst").read_bytes(), ZSTD_MAGIC + b"b")
+        self.assertEqual((self.folder / "6_6.dem.bz2").read_bytes(), ZSTD_MAGIC + b"a")
         self.assertEqual(self.filename_for(123), "6_6.dem.bz2")
         self.assertIn("conflict: 6_6.dem.zst already exists", output)
         self.assertEqual(code, 1, output)
