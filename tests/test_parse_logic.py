@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
@@ -7,6 +8,7 @@ from opendota_client import OpenDotaClient
 from database import Database
 from dota_replays import DotaReplays
 from pathlib import Path
+from tests.support import DAY, HOUR, daylight_time_began
 
 class TestParseLogic(unittest.TestCase):
     def setUp(self):
@@ -69,6 +71,25 @@ class TestParseLogic(unittest.TestCase):
         self.mock_client.poll_parse_completion.assert_called_once_with("job_123")
         # Should call upsert_match_details with the FINAL parsed data
         self.mock_db.upsert_match_details.assert_called_once_with(match_id, parsed_data)
+
+    def test_an_unparsed_match_inside_21_days_across_a_clock_change_is_requested(self):
+        daylight_time_began(self)
+        match_id = 67891
+        start_time = int(time.time()) - 21 * DAY + 2 * HOUR
+        self.mock_db.get_matches_without_details.return_value = [
+            {"match_id": match_id, "start_time": start_time}
+        ]
+        self.mock_client.get_match_details.return_value = {
+            "match_id": match_id,
+            "start_time": start_time,
+            "version": None,
+        }
+        self.mock_client.request_parse.return_value = "job_789"
+        self.mock_client.poll_parse_completion.return_value = False
+
+        self.app._fetch_match_details(player_id=1)
+
+        self.mock_client.request_parse.assert_called_once_with(match_id)
 
     def test_recheck_unparsed_matches(self):
         """Test that recheck_unparsed_matches calls the right DB method and triggers parse."""

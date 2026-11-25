@@ -12,7 +12,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
@@ -31,6 +30,9 @@ PROGRESS_INTERVAL = 25
 # One parse wait polls for at most this long, as poll_parse_completion defaults.
 PARSE_WAIT_TIMEOUT = 300
 
+# OpenDota recommends 21 days as the threshold for replay availability.
+REPLAY_DAYS = 21
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +49,17 @@ def _progress(items: list, description: str):
         if position % PROGRESS_INTERVAL == 0 or position == total:
             logger.info(f"{description}: {position}/{total}")
         yield item
+
+
+def _within_replay_days(start_time: int | None) -> bool:
+    """Return whether a match started within the last REPLAY_DAYS days.
+
+    The cutoff compares Unix seconds, as Database.get_unparsed_matches does, so
+    it is the same in every time zone and across a daylight-time change.
+    """
+    if not start_time:
+        return False
+    return start_time > int(time.time()) - REPLAY_DAYS * 86400
 
 
 def _replay_url_name(replay_url: str) -> str:
@@ -204,12 +217,9 @@ class DotaReplays:
             return
 
         logger.info(f"Fetching details for {len(matches)} matches...")
-        # OpenDota recommends 21 days as the threshold for replay availability
-        cutoff = datetime.now() - timedelta(days=21)
 
         for match in _progress(matches, "Fetching details"):
             match_id = match["match_id"]
-            start_time = datetime.fromtimestamp(match["start_time"])
 
             # 1. Fetch match details
             details = self.client.get_match_details(match_id)
@@ -219,7 +229,7 @@ class DotaReplays:
 
             # 2. Check if parsed (version field)
             version = details.get("version")
-            if version is None and start_time > cutoff:
+            if version is None and _within_replay_days(match["start_time"]):
                 logger.info(f"Match {match_id} is unparsed, requesting parse...")
                 job_id = self.client.request_parse(match_id)
                 if job_id:
@@ -323,16 +333,12 @@ class DotaReplays:
         # Filter by retry limits (unless force_retry within 21 days)
         eligible = []
         skipped = 0
-        cutoff = datetime.now() - timedelta(days=21)
-        
+
         for match in matches:
             match_id = match["match_id"]
-            start_time = match.get("start_time", 0)
-            match_date = datetime.fromtimestamp(start_time) if start_time else datetime.min
-            is_within_threshold = match_date > cutoff
-            
+
             # Skip matches older than 21 days (replays expire)
-            if not is_within_threshold:
+            if not _within_replay_days(match.get("start_time")):
                 skipped += 1
                 continue
             

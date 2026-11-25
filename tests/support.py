@@ -10,6 +10,7 @@ import os
 import socket
 import socketserver
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -17,6 +18,8 @@ from urllib.parse import urlsplit
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "opendota.json"
 # tests/record-opendota --parse wrote this: one parse request and its polls.
 PARSE_FIXTURE_PATH = FIXTURE_PATH.with_name("opendota-parse.json")
+DAY = 86400
+HOUR = 3600
 
 
 def closed_port() -> int:
@@ -35,6 +38,38 @@ def closed_port() -> int:
 def load_fixture(path: str | Path = FIXTURE_PATH) -> dict:
     """Return the fixture tests/record-opendota wrote."""
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def daylight_time_began(testcase, days: int = 10, shift_hours: int = 3) -> None:
+    """Run the rest of a case in a zone whose daylight time began `days` ago.
+
+    The zone is a POSIX rule, standard time at UTC and daylight time
+    `shift_hours` ahead of it from the day `days` ago to the day `days` ahead,
+    so a 21-day window ending now crosses one spring-forward change on any
+    date. Day numbers are zero-based and count February 29, and a rule whose
+    start day follows its end day spans the new year.
+    """
+    now = int(time.time())
+
+    def day_number(epoch: int) -> int:
+        return time.gmtime(epoch).tm_yday - 1
+
+    previous = os.environ.get("TZ")
+
+    def restore():
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+    testcase.addCleanup(restore)
+    start, end = day_number(now - days * DAY), day_number(now + days * DAY)
+    os.environ["TZ"] = f"XST0XDT-{shift_hours},{start}/0,{end}/0"
+    time.tzset()
+    # The rule must hold, or a case would pass without crossing a change.
+    testcase.assertEqual(time.localtime(now).tm_isdst, 1, os.environ["TZ"])
+    testcase.assertEqual(time.localtime(now - 21 * DAY).tm_isdst, 0, os.environ["TZ"])
 
 
 class WorkingDirectory:
