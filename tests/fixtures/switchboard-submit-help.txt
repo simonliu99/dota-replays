@@ -1,0 +1,45 @@
+usage: switchboard submit --hub <url> [--token-file <path>] [flags]
+
+Builds one job spec and sends it to the hub's agent API, printing the job id.
+--code git is the only code mode M8b submits.
+
+  --project <name>        the job's project (required)
+  --purpose <text>        what the job is for
+  --class <class>         merge, gate, focused, ordinary or urgent
+  --submitter <name>      who submitted it
+  --code git              the code mode
+  --task <name>           the task the worker policy must list
+  --repo <owner/name>     the repository the policy lists
+  --url <url>             the repository's git URL
+  --base <sha>            the base commit
+  --commit <sha>          the commit to run
+  --tree <sha>            the tree the commit must have
+  --merge <sha>           a head merged in order (repeatable)
+  --merge-identity <id>   "Name <email>" for the rebuilt merge commits
+  --merge-time <unix>     the merge commits' time
+  --entry <path>          argv[0], the task's entry
+  --arg <value>           one argument after the entry (repeatable)
+  --env <NAME=VALUE>      a spec environment value (repeatable), stored on the hub and in its copies
+  --secret <NAME>         a secret the task lists (repeatable)
+  --demand-cores <n>      accepted and ignored since 0.20.0 (#596)
+  --demand-mem-mb <n>     accepted and ignored since 0.20.0 (#596)
+  --gres <name=n>         a counted resource (repeatable)
+  --exclusive             take a whole host
+  --os <name>             a required OS (repeatable)
+  --label <name>          a required label (repeatable)
+  --backstop <seconds>    the job's longest run
+  --quiet <seconds>       stop after this long with no output (0 disables)
+  --notify <target>       an agent id or role:<name> to notice when the job ends
+  --hold-on <code>        hold the job's cost on this outcome or rc (repeatable)
+  --head <sha>            the head the job was made for
+  --parent <id>           the parent job
+  --step <name>           the step name
+  --plan <a,b,...>        the steps the job declares up front (repeatable, comma-separated)
+  --after <name>          a step this one waits for (repeatable)
+  --fail-fast             stop the parent's children at the first failure
+  --client-ref <32 hex>   the submit's idempotency key (default: fresh)
+  --json                  print the hub's whole answer
+
+The token comes from this host's agent binding for --hub, or from --token-file
+when one is given. --paseo-host selects the agent-<label> binding, whose agents
+call the hub with the Paseo host label.

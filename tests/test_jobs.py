@@ -28,6 +28,8 @@ VERIFY_ENTRY = ROOT / "jobs" / "verify"
 CHECK_ENTRY = ROOT / "jobs" / "check"
 SUBMIT_HELPER = ROOT / "scripts" / "switchboard-submit"
 POLICY_EXAMPLE = ROOT / "switchboard" / "policy.example.toml"
+# `switchboard submit --help` from switchboard 0.23.1, run under a scratch HOME.
+SUBMIT_HELP = ROOT / "tests" / "fixtures" / "switchboard-submit-help.txt"
 HUB_TOKEN = "sbm_test_token"
 
 PLAYER_ID = 86745912
@@ -52,6 +54,23 @@ def run(command, cwd, env, merge=False, timeout=120):
         text=True,
         timeout=timeout,
     )
+
+
+def declared_submit_flags(help_text: str) -> set:
+    """Return the flags `switchboard submit --help` declares.
+
+    A flag is declared on a usage line or at the start of an indented option
+    line. A flag named only in the help's sentences is not declared.
+    """
+    declared = set()
+    for line in help_text.splitlines():
+        if line.startswith("usage: "):
+            declared.update(re.findall(r"(?<![\w-])--[\w-]+(?![\w-])", line))
+        else:
+            option = re.match(r" +(--[\w-]+)(?![\w-])", line)
+            if option:
+                declared.add(option.group(1))
+    return declared
 
 
 class JobEntryTestCase(unittest.TestCase):
@@ -988,6 +1007,53 @@ class SubmitHelperTestCase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         argv = self.recorded_argv()
         self.assertEqual(self.value_after(argv, "--task"), "update")
+
+    def helper_flags(self) -> set:
+        """Return every flag the helper passes the stub for its three tasks."""
+        flags = set()
+        for task in ("update", "verify", "check"):
+            self.stub_log.unlink(missing_ok=True)
+            result = self.run_helper(["--hub", "https://hub.example.com", task])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            flags.update(arg for arg in self.recorded_argv() if arg.startswith("--"))
+        self.assertGreaterEqual(len(flags), 13, sorted(flags))
+        return flags
+
+    def assert_flags_declared(self, flags: set, help_text: str, source: str) -> None:
+        declared = declared_submit_flags(help_text)
+        self.assertIn("usage: switchboard submit", help_text, source)
+        self.assertGreaterEqual(len(declared), 20, f"{source}: {sorted(declared)}")
+        self.assertEqual(sorted(flags - declared), [], source)
+
+    def test_every_flag_the_helper_passes_is_declared_in_the_recorded_submit_help(self):
+        self.assert_flags_declared(
+            self.helper_flags(),
+            SUBMIT_HELP.read_text(encoding="utf-8"),
+            str(SUBMIT_HELP),
+        )
+
+    def test_every_flag_the_helper_passes_is_declared_in_switchboard_submit_help(self):
+        # simonliu99/switchboard#759: the flags meet the real binary's help,
+        # found on the suite's own PATH, before the stub directory is added.
+        switchboard = shutil.which("switchboard")
+        if switchboard is None:
+            self.skipTest(
+                "no switchboard binary on PATH, so the helper's flags are not "
+                "checked against switchboard submit --help"
+            )
+        flags = self.helper_flags()
+
+        shown = subprocess.run(
+            [switchboard, "submit", "--help"],
+            env={"HOME": str(self.home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            cwd=self.run_dir,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assert_flags_declared(flags, shown.stdout, f"{switchboard} submit --help")
 
 
 class DatabaseCopyTestCase(unittest.TestCase):
