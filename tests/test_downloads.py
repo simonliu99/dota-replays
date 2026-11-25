@@ -5,11 +5,20 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from database import Database
 from dota_replays import DotaReplays
 from opendota_client import OpenDotaClient
-from tests.support import ReplayServer, WorkingDirectory, closed_port
+from tests.support import (
+    DAY,
+    HOUR,
+    ReplayServer,
+    WorkingDirectory,
+    closed_port,
+    daylight_time_began,
+    daylight_time_ended,
+)
 
 PLAYER_ID = 1
 MATCH_ID = 8554321
@@ -45,10 +54,10 @@ class ReplayDownloadTestCase(unittest.TestCase):
         target = self.target()
         return target.with_name(f"{target.name}.part")
 
-    def match_row(self, match_id: int, age_days: int = 0) -> dict:
+    def match_row(self, match_id: int, age_days: int = 0, age_seconds: int = 0) -> dict:
         return {
             "match_id": match_id,
-            "start_time": int(time.time()) - age_days * 86400,
+            "start_time": int(time.time()) - age_days * 86400 - age_seconds,
             "duration": 1200,
             "hero_id": 1,
             "kills": 0,
@@ -58,9 +67,11 @@ class ReplayDownloadTestCase(unittest.TestCase):
             "player_slot": 0,
         }
 
-    def seed(self, replay_url: str, age_days: int = 0) -> None:
+    def seed(self, replay_url: str, age_days: int = 0, age_seconds: int = 0) -> None:
         self.db.upsert_player(PLAYER_ID, "Test Player")
-        self.db.insert_matches(PLAYER_ID, [self.match_row(MATCH_ID, age_days)])
+        self.db.insert_matches(
+            PLAYER_ID, [self.match_row(MATCH_ID, age_days, age_seconds)]
+        )
         self.db.upsert_match_details(
             MATCH_ID,
             {"match_id": MATCH_ID, "version": 21, "replay_url": replay_url},
@@ -128,6 +139,74 @@ class ReplayDownloadTestCase(unittest.TestCase):
 
         self.assertEqual(server.requests, [])
         self.assertEqual(self.db.get_downloads(), [])
+        self.assertFalse(self.target().exists())
+
+    def test_only_a_match_newer_than_the_cutoff_is_requested(self):
+        now = int(time.time())
+        cutoff = now - 21 * DAY
+        server = ReplayServer(BODY)
+        self.addCleanup(server.close)
+        starts = {MATCH_ID: cutoff - 1, MATCH_ID + 1: cutoff, MATCH_ID + 2: cutoff + 1}
+        self.db.upsert_player(PLAYER_ID, "Test Player")
+        self.db.insert_matches(
+            PLAYER_ID,
+            [{**self.match_row(match_id), "start_time": start} for match_id, start in starts.items()],
+        )
+        for match_id in starts:
+            self.db.upsert_match_details(
+                match_id,
+                {
+                    "match_id": match_id,
+                    "version": 21,
+                    "replay_url": f"{server.base_url}/570/{match_id}.dem.bz2",
+                },
+            )
+
+        with patch("dota_replays._now", return_value=now):
+            self.app()._download_replays()
+
+        self.assertEqual(server.requests, [("GET", f"/570/{MATCH_ID + 2}.dem.bz2")])
+
+    def test_a_match_inside_21_days_across_a_spring_forward_change_is_downloaded(self):
+        daylight_time_began(self)
+        server = ReplayServer(BODY)
+        self.addCleanup(server.close)
+        self.seed(
+            f"{server.base_url}/570/{MATCH_ID}.dem.bz2",
+            age_seconds=21 * DAY - 2 * HOUR,
+        )
+
+        self.app()._download_replays()
+
+        self.assertEqual(len(server.requests), 1)
+        self.assertEqual(self.target().read_bytes(), BODY)
+
+    def test_a_match_past_21_days_across_a_spring_forward_change_is_not_requested(self):
+        daylight_time_began(self)
+        server = ReplayServer(BODY)
+        self.addCleanup(server.close)
+        self.seed(
+            f"{server.base_url}/570/{MATCH_ID}.dem.bz2",
+            age_seconds=21 * DAY + 2 * HOUR,
+        )
+
+        self.app()._download_replays()
+
+        self.assertEqual(server.requests, [])
+        self.assertFalse(self.target().exists())
+
+    def test_a_match_past_21_days_across_a_fall_back_change_is_not_requested(self):
+        daylight_time_ended(self)
+        server = ReplayServer(BODY)
+        self.addCleanup(server.close)
+        self.seed(
+            f"{server.base_url}/570/{MATCH_ID}.dem.bz2",
+            age_seconds=21 * DAY + 2 * HOUR,
+        )
+
+        self.app()._download_replays()
+
+        self.assertEqual(server.requests, [])
         self.assertFalse(self.target().exists())
 
     def test_two_failed_attempts_stop_the_download_until_a_forced_retry(self):
