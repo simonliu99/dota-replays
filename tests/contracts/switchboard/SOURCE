@@ -1,0 +1,12 @@
+Copied byte for byte from simonliu99/switchboard at
+a984b7d2c3ffbf50646c749f1031bef062d9943f (master, switchboard#758). Each line
+below is a copy's git blob id, its path here and its path in switchboard.
+
+tests/test_switchboard_contract.py checks each blob id, replays
+docs-api/exchanges.json against tests/fake_hub.py, and compares tests/golden
+with the two digest lists. A change on either side is copied here again from
+switchboard, never edited here.
+
+911c46086c0a98b4e37dfd7931b539ba9460b8ea  docs-api/exchanges.json  testdata/contracts/docs-api/exchanges.json
+ccec498c6ae52f83c7116c23c977e116e946e513  golden-fixtures.SOURCE  web/src/modules/dota-replays/fixtures/SOURCE
+31b37c545ec2643d9991fcd540291b8f5bdd7c4f  golden-docs.SOURCE  web/src/modules/dota-replays/testdata/docs/SOURCE

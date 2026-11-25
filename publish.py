@@ -410,8 +410,8 @@ class Store:
                  query: str = "", body: bytes | None = None) -> tuple[int, bytes]:
         """Send one request and return its status and body."""
         # Collection and key go raw: both are limited to `[A-Za-z0-9._:-]`,
-        # whose characters are valid in a path segment, and the hub's router
-        # matches on the raw path, so an encoded `:` is refused as a name.
+        # whose characters are valid in a path segment. The hub decodes each
+        # segment once, so `y%3A1` would name the same document as `y:1`.
         path = f"/api/m/{MODULE}/docs/{collection}"
         if key is not None:
             path += f"/{key}"

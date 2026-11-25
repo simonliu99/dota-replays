@@ -1,0 +1,6 @@
+meta-disk.json: copied byte for byte from simonliu99/dota-replays tests/golden/meta/disk.json at commit 2cb42b6cfb5c18b0ebf5915475d77e6f4994a094 (dota-replays#28). invalid-meta-disk.json is switchboard's own.
+
+The copied file's SHA-256, as `shasum -a 256` prints it, with its path under
+tests/golden (TestCopiedFixturesMatchTheirSource):
+
+0d59786d5341893da52d108d1605069feb3078ac711076b558e7354d98fecde0  meta/disk.json
