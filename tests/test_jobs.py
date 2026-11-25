@@ -989,6 +989,41 @@ class SubmitHelperTestCase(unittest.TestCase):
         argv = self.recorded_argv()
         self.assertEqual(self.value_after(argv, "--task"), "update")
 
+    def test_every_flag_the_helper_passes_is_in_switchboard_submit_help(self):
+        # simonliu99/switchboard#759: the flags meet the real binary's help,
+        # found on the suite's own PATH, before the stub directory is added.
+        switchboard = shutil.which("switchboard")
+        if switchboard is None:
+            self.skipTest(
+                "no switchboard binary on PATH, so the helper's flags are not "
+                "checked against switchboard submit --help"
+            )
+        flags = set()
+        for task in ("update", "verify", "check"):
+            self.stub_log.unlink(missing_ok=True)
+            result = self.run_helper(["--hub", "https://hub.example.com", task])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            flags.update(arg for arg in self.recorded_argv() if arg.startswith("--"))
+        self.assertGreaterEqual(len(flags), 13, sorted(flags))
+
+        shown = subprocess.run(
+            [switchboard, "submit", "--help"],
+            env={"HOME": str(self.home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            cwd=self.run_dir,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertIn("usage: switchboard submit", shown.stdout)
+        missing = [
+            flag
+            for flag in sorted(flags)
+            if not re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", shown.stdout)
+        ]
+        self.assertEqual(missing, [], f"{switchboard} submit --help")
+
 
 class DatabaseCopyTestCase(unittest.TestCase):
     def setUp(self):
