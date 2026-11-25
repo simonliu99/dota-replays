@@ -3,7 +3,9 @@
 It applies the rules switchboard's docs/MODULES.md (Storage) states: a bearer
 token, names of `[A-Za-z0-9._:-]+` at most 128 bytes, 256 KiB per value, 16 MiB
 per module counted as collection, key and value bytes, and a list in key order
-answering `next_after`. It follows the hub's code at switchboard `e4fd19fc`:
+answering `next_after`. It follows the hub at switchboard `a984b7d2`, whose
+recorded answers tests/contracts/switchboard holds and
+tests/test_switchboard_contract.py replays against this fake:
 
 - `internal/httpapi/docs.go` `pathParam` decodes each path segment once, so an
   escaped name such as `y%3A1` names the same document as `y:1`; Go's `net/http`
@@ -12,6 +14,9 @@ answering `next_after`. It follows the hub's code at switchboard `e4fd19fc`:
 - `putDoc` refuses a body over 256 KiB as sent, before it is parsed;
 - `moduledocs.normalizeValue` stores the body compacted, its keys, numbers and
   escapes as sent, and refuses anything but one JSON object (NaN included);
+- `moduledocs.checkName` refuses the names `.` and `..`;
+- `moduledocs.List` reads one key past the page, so a full last page answers
+  `next_after` null;
 - `routes.go` `moduleGuard` answers 401 `no-token` without a `Bearer` header
   and 401 `invalid-token` for a token it does not hold.
 
@@ -187,7 +192,7 @@ class FakeHub(_LocalServer):
             key for (held, key) in self.documents if held == collection and key > after
         )
         page = keys[:limit]
-        next_after = page[-1] if len(page) == limit else None
+        next_after = page[-1] if len(keys) > limit else None
         answer = {
             "schema": 1,
             "docs": [
@@ -278,6 +283,8 @@ def check_name(what: str, name: str) -> None:
         raise _Invalid(f"the {what} is not 1 to {MAX_NAME} bytes")
     if not NAME_PATTERN.match(name):
         raise _Invalid(f"the {what} is not 1 to {MAX_NAME} bytes of [A-Za-z0-9._:-]")
+    if name in (".", ".."):
+        raise _Invalid(f"the {what} {name!r} is a dot name")
 
 
 def _error(code: str, detail: str = "") -> bytes:
