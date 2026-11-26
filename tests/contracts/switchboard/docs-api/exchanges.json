@@ -1,0 +1,234 @@
+{
+  "about": "Requests a module's service sends to the document store, in order, and the hub's answers, recorded by SWITCHBOARD_RECORD=1 go test -run '^TestDocsContract$' ./internal/httpapi (testdata/contracts/docs-api/SOURCE).",
+  "exchanges": [
+    {
+      "name": "put-object",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/meta/summary",
+      "token": "module",
+      "body": "{ \"matches\" : 2, \"players\" : [1, 2] }",
+      "status": 204,
+      "answer": ""
+    },
+    {
+      "name": "get-object-compacted",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/meta/summary",
+      "token": "module",
+      "status": 200,
+      "answer": "{\"matches\":2,\"players\":[1,2]}"
+    },
+    {
+      "name": "put-replace",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/meta/summary",
+      "token": "module",
+      "body": "{\"matches\":3}",
+      "status": 204,
+      "answer": ""
+    },
+    {
+      "name": "get-replaced",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/meta/summary",
+      "token": "module",
+      "status": 200,
+      "answer": "{\"matches\":3}"
+    },
+    {
+      "name": "put-escaped-colon",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/matches.1/y%3A797597",
+      "token": "module",
+      "body": "{\"id\":797597}",
+      "status": 204,
+      "answer": ""
+    },
+    {
+      "name": "get-plain-colon",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/matches.1/y:797597",
+      "token": "module",
+      "status": 200,
+      "answer": "{\"id\":797597}"
+    },
+    {
+      "name": "put-second-key",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/matches.1/y:797598",
+      "token": "module",
+      "body": "{\"id\":797598}",
+      "status": 204,
+      "answer": ""
+    },
+    {
+      "name": "put-third-key",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/matches.1/y:797599",
+      "token": "module",
+      "body": "{\"id\":797599}",
+      "status": 204,
+      "answer": ""
+    },
+    {
+      "name": "list-first-page",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/matches.1?limit=2",
+      "token": "module",
+      "status": 200,
+      "answer": "{\"schema\":1,\"docs\":[{\"key\":\"y:797597\",\"value\":{\"id\":797597},\"updated_ms\":1793016000000},{\"key\":\"y:797598\",\"value\":{\"id\":797598},\"updated_ms\":1793016000000}],\"next_after\":\"y:797598\"}\n"
+    },
+    {
+      "name": "list-last-page",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/matches.1?limit=2\u0026after=y:797598",
+      "token": "module",
+      "status": 200,
+      "answer": "{\"schema\":1,\"docs\":[{\"key\":\"y:797599\",\"value\":{\"id\":797599},\"updated_ms\":1793016000000}],\"next_after\":null}\n"
+    },
+    {
+      "name": "list-full-last-page",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/matches.1?limit=1\u0026after=y:797598",
+      "token": "module",
+      "status": 200,
+      "answer": "{\"schema\":1,\"docs\":[{\"key\":\"y:797599\",\"value\":{\"id\":797599},\"updated_ms\":1793016000000}],\"next_after\":null}\n"
+    },
+    {
+      "name": "list-default-limit",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/matches.1",
+      "token": "module",
+      "status": 200,
+      "answer": "{\"schema\":1,\"docs\":[{\"key\":\"y:797597\",\"value\":{\"id\":797597},\"updated_ms\":1793016000000},{\"key\":\"y:797598\",\"value\":{\"id\":797598},\"updated_ms\":1793016000000},{\"key\":\"y:797599\",\"value\":{\"id\":797599},\"updated_ms\":1793016000000}],\"next_after\":null}\n"
+    },
+    {
+      "name": "list-empty-collection",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/none",
+      "token": "module",
+      "status": 200,
+      "answer": "{\"schema\":1,\"docs\":[],\"next_after\":null}\n"
+    },
+    {
+      "name": "list-limit-over-200",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/matches.1?limit=201",
+      "token": "module",
+      "status": 400,
+      "answer": "{\"code\":\"invalid\",\"detail\":\"limit must be 1 to 200\"}\n"
+    },
+    {
+      "name": "delete-key",
+      "method": "DELETE",
+      "path": "/api/m/dota-replays/docs/matches.1/y:797599",
+      "token": "module",
+      "status": 204,
+      "answer": ""
+    },
+    {
+      "name": "delete-missing-key",
+      "method": "DELETE",
+      "path": "/api/m/dota-replays/docs/matches.1/y:797599",
+      "token": "module",
+      "status": 204,
+      "answer": ""
+    },
+    {
+      "name": "get-deleted-key",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/matches.1/y:797599",
+      "token": "module",
+      "status": 404,
+      "answer": "{\"code\":\"not-found\",\"detail\":\"no such document\"}\n"
+    },
+    {
+      "name": "put-array",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/meta/bad",
+      "token": "module",
+      "body": "[1,2]",
+      "status": 400,
+      "answer": "{\"code\":\"invalid\",\"detail\":\"invalid document: the value is not a JSON object\"}\n"
+    },
+    {
+      "name": "put-data-after-object",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/meta/bad",
+      "token": "module",
+      "body": "{\"a\":1} {}",
+      "status": 400,
+      "answer": "{\"code\":\"invalid\",\"detail\":\"invalid document: the value has data after its object\"}\n"
+    },
+    {
+      "name": "put-escaped-slash",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/meta/a%2Fb",
+      "token": "module",
+      "body": "{\"a\":1}",
+      "status": 400,
+      "answer": "{\"code\":\"invalid\",\"detail\":\"invalid document: the key \\\"a/b\\\" is not 1 to 128 bytes of [A-Za-z0-9._:-]\"}\n"
+    },
+    {
+      "name": "put-escaped-dot-dot",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/meta/%2E%2E",
+      "token": "module",
+      "body": "{\"a\":1}",
+      "status": 400,
+      "answer": "{\"code\":\"invalid\",\"detail\":\"invalid document: the key \\\"..\\\" is a dot name\"}\n"
+    },
+    {
+      "name": "put-name-over-128",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/meta/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "token": "module",
+      "body": "{\"a\":1}",
+      "status": 400,
+      "answer": "{\"code\":\"invalid\",\"detail\":\"invalid document: the key \\\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\\\" is not 1 to 128 bytes of [A-Za-z0-9._:-]\"}\n"
+    },
+    {
+      "name": "put-not-utf8",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/meta/bad",
+      "token": "module",
+      "body_hex": "7b2261223a22e282227d",
+      "status": 400,
+      "answer": "{\"code\":\"invalid\",\"detail\":\"invalid document: the value is not valid UTF-8\"}\n"
+    },
+    {
+      "name": "put-at-value-limit",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/meta/big",
+      "token": "module",
+      "body_size": 262144,
+      "status": 204,
+      "answer": ""
+    },
+    {
+      "name": "put-over-value-limit",
+      "method": "PUT",
+      "path": "/api/m/dota-replays/docs/meta/bigger",
+      "token": "module",
+      "body_size": 262145,
+      "status": 413,
+      "answer": "{\"code\":\"too-large\",\"detail\":\"a document value is at most 262144 bytes\"}\n"
+    },
+    {
+      "name": "get-without-token",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/meta/summary",
+      "token": "none",
+      "status": 401,
+      "answer": "{\"code\":\"no-token\",\"detail\":\"a bearer token is required\"}\n"
+    },
+    {
+      "name": "get-with-unknown-token",
+      "method": "GET",
+      "path": "/api/m/dota-replays/docs/meta/summary",
+      "token": "unknown",
+      "status": 401,
+      "answer": "{\"code\":\"invalid-token\"}\n"
+    }
+  ]
+}

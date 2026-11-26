@@ -1,0 +1,15 @@
+Copied byte for byte from simonliu99/dota-replays tests/golden at commit 2cb42b6cfb5c18b0ebf5915475d77e6f4994a094 (the publisher's golden documents, D1 merge, dota-replays#28).
+
+Each copied file's SHA-256, as `shasum -a 256` prints it, with its path under
+tests/golden. dota-replays' tests compare its golden files with this list, and
+switchboard's TestCopiedFixturesMatchTheirSource compares the copies here, so a
+golden file regenerated on either side fails until both sides copy it again.
+
+7af8068e96a99bb432b5bea871ffc15f313ca0ab2a83ed68d834d72d3cc2bd6e  matches.111620041/y:797597.json
+5030ed95168c4a70fed7893a27b8b8d168d75a00f868d18d43ab21a5ee63e5e4  matches.111620041/y:797598.json
+0908ea5bd57825310ee8dc7234e40a1664aa3346d077d242a7dadd966d08013a  matches.86745912/y:797597.json
+d371c60bfc9aeba905ef0d7635296148f3b5c7c928ed73017b5f9a05e3a35fc4  matches.86745912/y:797598.json
+0d59786d5341893da52d108d1605069feb3078ac711076b558e7354d98fecde0  meta/disk.json
+c43a5233482c3d3854d057969ce99442fd27ce3086f3a24371eedecb14b1ecf9  meta/heroes.json
+b08080b3e41cc0e082f2606d287b15a042203a17818a96bd8b04edf9ab08b4a4  meta/players.json
+3041349e46ef4a1912b1538a4a6dbf54ed4dbf6187ad8d9ef5153e409f14fc61  meta/summary.json
