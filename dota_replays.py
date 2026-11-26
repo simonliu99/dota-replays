@@ -12,7 +12,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
@@ -31,6 +30,9 @@ PROGRESS_INTERVAL = 25
 # One parse wait polls for at most this long, as poll_parse_completion defaults.
 PARSE_WAIT_TIMEOUT = 300
 
+# OpenDota recommends 21 days as the threshold for replay availability.
+REPLAY_DAYS = 21
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +49,21 @@ def _progress(items: list, description: str):
         if position % PROGRESS_INTERVAL == 0 or position == total:
             logger.info(f"{description}: {position}/{total}")
         yield item
+
+
+def _now() -> float:
+    """Return the Unix time. The cutoff cases replace it with a fixed clock."""
+    return time.time()
+
+
+def _replay_cutoff() -> int:
+    """Return the Unix second a match must start after to be within REPLAY_DAYS.
+
+    An operation takes one cutoff before its loop and compares every match with
+    it. Unix seconds, as in Database.get_unparsed_matches, keep the window the
+    same in every time zone and across a daylight time change.
+    """
+    return int(_now()) - REPLAY_DAYS * 86400
 
 
 def _replay_url_name(replay_url: str) -> str:
@@ -204,12 +221,11 @@ class DotaReplays:
             return
 
         logger.info(f"Fetching details for {len(matches)} matches...")
-        # OpenDota recommends 21 days as the threshold for replay availability
-        cutoff = datetime.now() - timedelta(days=21)
+        cutoff = _replay_cutoff()
 
         for match in _progress(matches, "Fetching details"):
             match_id = match["match_id"]
-            start_time = datetime.fromtimestamp(match["start_time"])
+            start_time = match["start_time"]
 
             # 1. Fetch match details
             details = self.client.get_match_details(match_id)
@@ -323,13 +339,12 @@ class DotaReplays:
         # Filter by retry limits (unless force_retry within 21 days)
         eligible = []
         skipped = 0
-        cutoff = datetime.now() - timedelta(days=21)
-        
+        cutoff = _replay_cutoff()
+
         for match in matches:
             match_id = match["match_id"]
-            start_time = match.get("start_time", 0)
-            match_date = datetime.fromtimestamp(start_time) if start_time else datetime.min
-            is_within_threshold = match_date > cutoff
+            start_time = match.get("start_time") or 0
+            is_within_threshold = start_time > cutoff
             
             # Skip matches older than 21 days (replays expire)
             if not is_within_threshold:

@@ -1013,8 +1013,8 @@ class FakeHubRulesTestCase(unittest.TestCase):
                 self.assertIn(b"invalid", body)
 
     def test_an_escaped_and_a_plain_name_are_the_same_document(self):
-        # switchboard e4fd19fc internal/httpapi/docs_test.go
-        # TestDocNamesAreDecodedOnEveryMethod, against the fake.
+        # switchboard's recorded put-escaped-colon and get-plain-colon
+        # (tests/contracts/switchboard), on every method.
         escaped = "/api/m/dota-replays/docs/y%3A1/y%3A797597"
         plain = "/api/m/dota-replays/docs/y:1/y:797597"
 
