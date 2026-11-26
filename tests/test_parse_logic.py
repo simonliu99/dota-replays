@@ -132,13 +132,15 @@ class TestParseLogic(unittest.TestCase):
 
     def test_the_parse_cutoff_is_taken_once_before_the_details_calls(self):
         clock = [int(time.time())]
-        self.unparsed_matches({67896: clock[0] - 21 * DAY + 1})
+        start = clock[0] - 21 * DAY + 1
+        self.unparsed_matches({67896: start, 67897: start})
         details = self.mock_client.get_match_details.side_effect
 
         def slow_details(match_id):
-            # The details call takes a minute, so the match is past 21 days
-            # by the time it answers.
-            clock[0] += 60
+            # The first details call takes a minute, so both matches are past
+            # 21 days by the time it answers.
+            if match_id == 67896:
+                clock[0] += 60
             return details(match_id)
 
         self.mock_client.get_match_details.side_effect = slow_details
@@ -146,7 +148,9 @@ class TestParseLogic(unittest.TestCase):
         with patch("dota_replays._now", side_effect=lambda: clock[0]):
             self.app._fetch_match_details(player_id=1)
 
-        self.mock_client.request_parse.assert_called_once_with(67896)
+        self.assertEqual(
+            self.mock_client.request_parse.call_args_list, [call(67896), call(67897)]
+        )
 
     def test_recheck_unparsed_matches(self):
         """Test that recheck_unparsed_matches calls the right DB method and triggers parse."""
