@@ -10,6 +10,7 @@ import os
 import socket
 import socketserver
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -17,6 +18,8 @@ from urllib.parse import urlsplit
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "opendota.json"
 # tests/record-opendota --parse wrote this: one parse request and its polls.
 PARSE_FIXTURE_PATH = FIXTURE_PATH.with_name("opendota-parse.json")
+DAY = 86400
+HOUR = 3600
 
 
 def closed_port() -> int:
@@ -35,6 +38,56 @@ def closed_port() -> int:
 def load_fixture(path: str | Path = FIXTURE_PATH) -> dict:
     """Return the fixture tests/record-opendota wrote."""
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def daylight_time_began(testcase, days: int = 10, shift_hours: int = 3) -> None:
+    """Run the rest of a case in a zone whose daylight time began `days` ago.
+
+    The zone is a POSIX rule, standard time at UTC and daylight time
+    `shift_hours` ahead of it from the day `days` ago to the day `days` ahead,
+    so a 21-day window ending now crosses one spring-forward change on any
+    date. Day numbers are zero-based and count February 29, and a rule whose
+    start day follows its end day spans the new year.
+    """
+    now = int(time.time())
+    _daylight_zone(testcase, now, now - days * DAY, now + days * DAY, shift_hours, True)
+
+
+def daylight_time_ended(testcase, days: int = 10, shift_hours: int = 3) -> None:
+    """Run the rest of a case in a zone whose daylight time ended `days` ago.
+
+    As daylight_time_began, with daylight time from the day `days + 20` ago to
+    the day `days` ago, so a 21-day window ending now crosses one fall-back
+    change on any date.
+    """
+    now = int(time.time())
+    _daylight_zone(
+        testcase, now, now - (days + 20) * DAY, now - days * DAY, shift_hours, False
+    )
+
+
+def _daylight_zone(
+    testcase, now: int, begins: int, ends: int, shift_hours: int, daylight_now: bool
+) -> None:
+    def day_number(epoch: int) -> int:
+        return time.gmtime(epoch).tm_yday - 1
+
+    previous = os.environ.get("TZ")
+
+    def restore():
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+    testcase.addCleanup(restore)
+    os.environ["TZ"] = f"XST0XDT-{shift_hours},{day_number(begins)}/0,{day_number(ends)}/0"
+    time.tzset()
+    # The rule must hold, or a case would pass without crossing a change.
+    zone = os.environ["TZ"]
+    testcase.assertEqual(time.localtime(now).tm_isdst, int(daylight_now), zone)
+    testcase.assertEqual(time.localtime(now - 21 * DAY).tm_isdst, int(not daylight_now), zone)
 
 
 class WorkingDirectory:
